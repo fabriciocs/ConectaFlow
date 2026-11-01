@@ -1,10 +1,11 @@
 module.exports = {
   apps: [
     {
-      name: "wa-akg",
-      script: "npx",
-      args: "tsx src/server/index.ts",
-      interpreter: "none", // Avoid PM2 trying to run npx as a Node.js script directly
+      name: "wa-evomenu",
+      cwd: "/opt/WA-AKG",
+      script: "/home/evomenu/.nvm/versions/node/v22.23.3/bin/node",
+      args: "node_modules/tsx/dist/cli.mjs src/server/index.ts",
+      interpreter: "none",
       watch: false,
       autorestart: true,
       max_memory_restart: "1G",

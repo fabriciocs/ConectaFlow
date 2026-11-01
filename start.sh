@@ -157,11 +157,11 @@ if ! command -v pm2 &> /dev/null; then
 fi
 
 # Check if application is already running in PM2
-if pm2 show wa-akg &> /dev/null; then
-    echo -e "${YELLOW}🔄 Application 'wa-akg' is already running. Reloading to apply changes...${NC}"
-    pm2 reload wa-akg
+if pm2 show wa-evomenu &> /dev/null; then
+    echo -e "${YELLOW}🔄 Application 'wa-evomenu' is already running. Reloading to apply changes...${NC}"
+    pm2 reload wa-evomenu
 else
-    echo -e "${GREEN}🚀 Starting 'wa-akg' process using ecosystem.config.js...${NC}"
+    echo -e "${GREEN}🚀 Starting 'wa-evomenu' process using ecosystem.config.js...${NC}"
     pm2 start ecosystem.config.js
 fi
 
@@ -175,10 +175,10 @@ echo -e "${GREEN}       🎉 WA-AKG DEPLOYED SUCCESSFULLY! 🎉         ${NC}"
 echo -e "${GREEN}====================================================${NC}"
 echo -e "\n${BLUE}Useful PM2 Commands:${NC}"
 echo -e "  - View status:           ${YELLOW}pm2 status${NC}"
-echo -e "  - View real-time logs:   ${YELLOW}pm2 logs wa-akg${NC}"
+echo -e "  - View real-time logs:   ${YELLOW}pm2 logs wa-evomenu${NC}"
 echo -e "  - Monitor resources:     ${YELLOW}pm2 monit${NC}"
-echo -e "  - Stop gateway service:  ${YELLOW}pm2 stop wa-akg${NC}"
-echo -e "  - Restart service:       ${YELLOW}pm2 restart wa-akg${NC}"
+echo -e "  - Stop gateway service:  ${YELLOW}pm2 stop wa-evomenu${NC}"
+echo -e "  - Restart service:       ${YELLOW}pm2 restart wa-evomenu${NC}"
 
 echo -e "\n${BLUE}Useful Project Script Commands:${NC}"
 echo -e "  - Run Dev Mode:          ${YELLOW}npm run dev${NC}"
