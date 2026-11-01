@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { addNgrokSkipWarningHeader, createMcpServer, initializeMcpServer } from "./server.mjs";
-import { appOrigin, normalizeBasePath, protectedResourceMetadataUrl, requestOriginFromNodeRequest } from "../../../src/lib/oauth/discovery.mjs";
+import { appOrigin, canonicalMcpResource, normalizeBasePath, protectedResourceMetadataUrl, requestOriginFromNodeRequest } from "../../../src/lib/oauth/discovery.mjs";
 
 export const endpointPath = process.env.WA_AKG_MCP_HTTP_PATH || "/mcp";
 const maxBodyBytes = 1024 * 1024;
@@ -33,7 +33,7 @@ function apiBaseUrl() {
   return url;
 }
 
-async function authenticate(req) {
+async function authenticate(req, basePath) {
   const token = /^Bearer\s+([^\s]+)$/i.exec(req.headers.authorization ?? "")?.[1];
   if (!token) return null;
   const baseUrl = apiBaseUrl();
@@ -50,8 +50,22 @@ async function authenticate(req) {
     const info = await response.json();
     const scopes = info?.wa_akg?.scope;
     if (typeof info?.sub !== "string" || !Array.isArray(scopes) || !scopes.includes("mcp:read")) return null;
+    if (!process.env.OAUTH_ISSUER_URL?.trim() && !process.env.BASE_URL?.trim()) return null;
+    const expectedResource = canonicalMcpResource({
+      configuredIssuer: process.env.OAUTH_ISSUER_URL,
+      configuredOrigin: process.env.BASE_URL,
+      basePath,
+      endpointPath,
+    });
+    const tokenResource = info?.wa_akg?.resource;
+    if (typeof tokenResource !== "string" || tokenResource !== expectedResource) return null;
     const sessionScope = info?.wa_akg?.session_scope;
-    return { accessToken: token, userId: info.sub, clientId: info.wa_akg.client_id, scopes, ...(Array.isArray(sessionScope) ? { sessionScope } : {}) };
+    const sessionCapabilities = info?.wa_akg?.session_capabilities;
+    const operationAllowlist = info?.wa_akg?.operation_allowlist;
+    return { authMethod: "oauth-user-delegation", accessToken: token, userId: info.sub, clientId: info.wa_akg.client_id, scopes, resource: tokenResource,
+      ...(Array.isArray(sessionScope) ? { sessionScope } : {}),
+      ...(sessionCapabilities && typeof sessionCapabilities === "object" ? { sessionCapabilities } : {}),
+      ...(Array.isArray(operationAllowlist) ? { operationAllowlist } : {}) };
   } catch {
     return null;
   } finally {
@@ -89,6 +103,16 @@ function unauthorized(res, req, basePath) {
   res.end(JSON.stringify({ error: "Unauthorized" }));
 }
 
+function requestBasePath(req, fallback) {
+  const forwarded = req.headers["x-forwarded-prefix"];
+  const candidate = typeof forwarded === "string" ? forwarded.split(",", 1)[0].trim() : "";
+  try {
+    return normalizeBasePath(candidate || fallback);
+  } catch {
+    return normalizeBasePath(fallback);
+  }
+}
+
 export async function createMcpHttpHandler({ basePath = process.env.NEXT_PUBLIC_BASE_PATH || "" } = {}) {
   if (process.env.WA_AKG_MCP_ENABLED !== "true") throw new Error("MCP HTTP endpoint is disabled; set WA_AKG_MCP_ENABLED=true to enable it");
   apiBaseUrl();
@@ -96,9 +120,10 @@ export async function createMcpHttpHandler({ basePath = process.env.NEXT_PUBLIC_
 
   return async function handleMcpHttp(req, res) {
     await cleanupSessions();
-    const authContext = await authenticate(req);
+    const currentBasePath = requestBasePath(req, normalizedBasePath);
+    const authContext = await authenticate(req, currentBasePath);
     if (!authContext) {
-      unauthorized(res, req, normalizedBasePath);
+      unauthorized(res, req, currentBasePath);
       return true;
     }
     let body;
@@ -119,6 +144,8 @@ export async function createMcpHttpHandler({ basePath = process.env.NEXT_PUBLIC_
         credential.accessToken = authContext.accessToken;
         credential.scopes = authContext.scopes;
         credential.sessionScope = authContext.sessionScope;
+        credential.sessionCapabilities = authContext.sessionCapabilities;
+        credential.operationAllowlist = authContext.operationAllowlist;
         entry.lastSeenAt = Date.now();
       }
 
@@ -139,7 +166,7 @@ export async function createMcpHttpHandler({ basePath = process.env.NEXT_PUBLIC_
           return true;
         }
         const mcpServer = createMcpServer();
-        credential = { accessToken: authContext.accessToken, scopes: authContext.scopes };
+        credential = { accessToken: authContext.accessToken, scopes: authContext.scopes, sessionScope: authContext.sessionScope, sessionCapabilities: authContext.sessionCapabilities, operationAllowlist: authContext.operationAllowlist };
         await initializeMcpServer(mcpServer, credential);
         transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
         const currentTransport = transport;

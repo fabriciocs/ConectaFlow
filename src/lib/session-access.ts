@@ -10,6 +10,24 @@ export const ROLE_HIERARCHY = {
 
 export type Role = keyof typeof ROLE_HIERARCHY;
 
+/**
+ * Compatibility decision for the legacy SessionAccess relation.
+ *
+ * SessionAccess remains in the schema for backwards compatibility, but it no
+ * longer grants session access to non-administrative users. This keeps the
+ * current schema/types usable without preserving shared-session privileges.
+ */
+export const LEGACY_SESSION_ACCESS_POLICY = "DENY_NON_OWNER" as const;
+
+export type SessionAccessDecision = "SUPERADMIN_GLOBAL" | "OWNER" | "DENIED_LEGACY_SHARED";
+
+/** Resolve the minimum session policy before any database lookup is performed. */
+export function resolveSessionAccessDecision(userId: string, userRole: string, ownerId: string): SessionAccessDecision {
+    if (isAdmin(userRole)) return "SUPERADMIN_GLOBAL";
+    if (userId === ownerId) return "OWNER";
+    return "DENIED_LEGACY_SHARED";
+}
+
 /** Webhook metadata safe to expose in session responses. Never select `secret`. */
 export const SAFE_WEBHOOK_SELECT = {
     id: true,
@@ -36,28 +54,59 @@ export function sanitizeSessionWebhooks<T extends { webhooks?: unknown }>(sessio
     return { ...session, webhooks } as T;
 }
 
-/** Remove connection credentials from a session shared with a non-owner. */
-export function sanitizeSharedSession<T>(session: T): T {
+const SENSITIVE_CONFIG_KEYS = new Set([
+    "apikey", "api_key", "clientsecret", "password", "refreshtoken", "secret",
+    "token", "access_token", "accesstoken", "privatekey", "requestheaders", "removebgapikey",
+]);
+
+function redactConfigValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(redactConfigValue);
+    if (!value || typeof value !== "object") return value;
+    const safe: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+        if (SENSITIVE_CONFIG_KEYS.has(key.toLowerCase().replace(/[-\s]/g, ""))) continue;
+        safe[key] = redactConfigValue(nestedValue);
+    }
+    return safe;
+}
+
+/** Remove connection credentials and opaque secrets from an API/OAuth read. */
+export function sanitizeReadOnlySession<T>(session: T): T {
     const safeSession: Record<string, unknown> = { ...(session as object) };
     delete safeSession.qr;
+    delete safeSession.pairingCode;
+    delete safeSession.config;
 
     if (Array.isArray(safeSession.webhooks)) {
         safeSession.webhooks = safeSession.webhooks.map(webhook => {
             if (!webhook || typeof webhook !== "object") return webhook;
             const safeWebhook = { ...(webhook as Record<string, unknown>) };
             if (typeof safeWebhook.url === "string") safeWebhook.url = sanitizeWebhookUrl(safeWebhook.url);
+            delete safeWebhook.secret;
+            delete safeWebhook.requestHeaders;
             return safeWebhook;
         });
     }
 
     const botConfig = safeSession.botConfig;
-    if (botConfig && typeof botConfig === "object" && !Array.isArray(botConfig)) {
-        const safeBotConfig = { ...(botConfig as Record<string, unknown>) };
-        delete safeBotConfig.removeBgApiKey;
-        safeSession.botConfig = safeBotConfig;
-    }
+    if (botConfig !== undefined) safeSession.botConfig = redactConfigValue(botConfig);
 
     return safeSession as T;
+}
+
+/** Remove connection credentials from a session shared with a non-owner. */
+export function sanitizeSharedSession<T>(session: T): T {
+    return sanitizeReadOnlySession(session);
+}
+
+/** Explicit semantic alias for OAuth/API read-only responses. */
+export function sanitizeOAuthReadSession<T>(session: T): T {
+    return sanitizeReadOnlySession(session);
+}
+
+/** Redact known and nested secret keys from a bot configuration response. */
+export function sanitizeReadOnlyBotConfig<T>(config: T): T {
+    return redactConfigValue(config) as T;
 }
 
 /** Pure ownership rule used by route guards and their tests. */
@@ -91,16 +140,17 @@ export function isAdmin(userRole: string): boolean {
 }
 
 /**
- * Check if user can access a session
- * - SUPERADMIN can access all sessions
- * - Other users can access their own sessions OR sessions shared with them
+ * Check if user can access a session.
+ *
+ * SessionAccess is intentionally not consulted here: it is a legacy schema
+ * relation and must not grant shared access to ordinary users. SUPERADMIN is
+ * globally authorized, while all other users must own the session.
  */
 export async function canAccessSession(userId: string, userRole: string, sessionId: string): Promise<boolean> {
     if (isAdmin(userRole)) {
         return true;
     }
 
-    // Check if session belongs to user (ownership)
     const session = await prisma.session.findFirst({
         where: {
             OR: [
@@ -110,31 +160,7 @@ export async function canAccessSession(userId: string, userRole: string, session
         }
     });
 
-    if (session) return true;
-
-    // Check if user has shared access
-    const dbSession = await prisma.session.findFirst({
-        where: {
-            OR: [
-                { id: sessionId },
-                { sessionId: sessionId }
-            ]
-        },
-        select: { id: true }
-    });
-
-    if (!dbSession) return false;
-
-    const sharedAccess = await prisma.sessionAccess.findUnique({
-        where: {
-            sessionId_userId: {
-                sessionId: dbSession.id,
-                userId
-            }
-        }
-    });
-
-    return !!sharedAccess;
+    return !!session && resolveSessionAccessDecision(userId, userRole, session.userId) === "OWNER";
 }
 
 /**
@@ -159,9 +185,11 @@ export async function isSessionOwner(userId: string, userRole: string, sessionId
 }
 
 /**
- * Get sessions that user can access
- * - SUPERADMIN sees all
- * - Others see only their own + shared
+ * Get sessions that user can access.
+ *
+ * SessionAccess is retained only for schema/type compatibility and is
+ * intentionally excluded from this query. Non-administrative users see only
+ * sessions they own; SUPERADMIN sees all sessions.
  */
 export async function getAccessibleSessions(userId: string, userRole: string) {
     if (isAdmin(userRole)) {
@@ -172,35 +200,11 @@ export async function getAccessibleSessions(userId: string, userRole: string) {
         return sessions.map(sanitizeSessionWebhooks);
     }
 
-    // Get sessions owned by user + sessions shared with user
-    const [ownedSessions, sharedAccess] = await Promise.all([
-        prisma.session.findMany({
-            where: { userId },
-            orderBy: { createdAt: 'desc' },
-            include: safeSessionInclude()
-        }),
-        prisma.sessionAccess.findMany({
-            where: { userId },
-            select: { sessionId: true }
-        })
-    ]);
-
-    if (sharedAccess.length === 0) return ownedSessions.map(sanitizeSessionWebhooks);
-
-    const sharedSessionIds = sharedAccess.map(a => a.sessionId);
-    const ownedIds = new Set(ownedSessions.map(s => s.id));
-    const missingIds = sharedSessionIds.filter(id => !ownedIds.has(id));
-
-    if (missingIds.length === 0) return ownedSessions.map(sanitizeSessionWebhooks);
-
-    const sharedSessions = await prisma.session.findMany({
-        where: { id: { in: missingIds } },
+    const ownedSessions = await prisma.session.findMany({
+        where: { userId },
         orderBy: { createdAt: 'desc' },
         include: safeSessionInclude()
     });
 
-    return [
-        ...ownedSessions.map(sanitizeSessionWebhooks),
-        ...sharedSessions.map(session => sanitizeSessionWebhooks(sanitizeSharedSession(session)))
-    ];
+    return ownedSessions.map(sanitizeSessionWebhooks);
 }

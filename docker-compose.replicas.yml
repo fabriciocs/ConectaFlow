@@ -1,0 +1,9 @@
+services:
+  app:
+    # The base compose file publishes one host port for local use. Remove that
+    # binding when the service is scaled behind a reverse proxy.
+    ports: !reset []
+    expose:
+      - "${PORT:-43000}"
+    deploy:
+      replicas: 2

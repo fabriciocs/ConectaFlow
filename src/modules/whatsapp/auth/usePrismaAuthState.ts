@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { AuthenticationCreds, AuthenticationState, BufferJSON, initAuthCreds, SignalDataTypeMap } from "@whiskeysockets/baileys";
-import { encryptData, decryptData } from "@/lib/crypto";
+import { encryptData, decryptData, isEncryptedData } from "@/lib/crypto";
 
 /**
  * Load Baileys credentials from the database. Missing rows mean a first pairing;
@@ -18,7 +18,19 @@ export const loadPrismaAuthState = async (sessionId: string): Promise<{ state: A
         const raw = typeof data.value === "string" ? data.value : JSON.stringify(data.value);
         if (!raw) throw new Error(`Stored WhatsApp auth state is empty (${type})`);
         try {
-            return JSON.parse(decryptData(raw), BufferJSON.reviver);
+            if (!isEncryptedData(raw) && process.env.NODE_ENV === "production") {
+                throw new Error("Legacy plaintext WhatsApp auth state requires an explicit migration");
+            }
+            const value = JSON.parse(decryptData(raw), BufferJSON.reviver);
+            // Existing deployments may contain legacy plaintext rows. Read them
+            // once, then immediately replace the row with authenticated ciphertext.
+            if (!isEncryptedData(raw)) {
+                await prisma.authState.update({
+                    where: { sessionId_key: { sessionId, key } },
+                    data: { value: encryptData(JSON.stringify(value, BufferJSON.replacer)) },
+                });
+            }
+            return value;
         } catch {
             throw new Error(`Stored WhatsApp auth state is corrupt or cannot be decrypted (${type})`);
         }

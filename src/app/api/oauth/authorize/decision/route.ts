@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { approveAuthorizationRequest, bindAuthorizationRequest, denyAuthorizationRequest, OAuthError } from "@/lib/oauth";
+import { InvalidSessionCapabilityError, normalizeSessionCapabilities, parseSubmittedSessionCapabilities, type SessionCapabilityMap } from "@/lib/oauth/grant-capabilities";
 import { authorizationRedirectWithIssuer, oauthIssuer } from "@/lib/oauth/discovery.mjs";
 import { prisma } from "@/lib/prisma";
 import { requestBasePath, requestPublicOrigin } from "@/lib/base-path";
@@ -8,7 +9,7 @@ import { requestBasePath, requestPublicOrigin } from "@/lib/base-path";
 export async function POST(request: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true } });
+  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true, role: true } });
   if (!account?.emailVerified) return NextResponse.json({ error: "email_not_verified" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   const origin = request.headers.get("origin");
   if (origin && origin !== requestPublicOrigin(request.headers, request.url)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -24,14 +25,37 @@ export async function POST(request: NextRequest) {
       result = await denyAuthorizationRequest(requestId, session.user.id);
     } else {
       const submittedIds = form.getAll("sessionIds").map(String);
+      let submittedCapabilities: SessionCapabilityMap | undefined;
+      try {
+        const entries = [
+          ...form.getAll("sessionCapability").map(String),
+          ...Array.from(form.entries())
+            .filter(([key]) => key.startsWith("sessionCapability-"))
+            .map(([key, value]) => `${key.slice("sessionCapability-".length)}:${String(value)}`),
+        ];
+        submittedCapabilities = parseSubmittedSessionCapabilities(
+          form.get("sessionCapabilities") === null ? null : String(form.get("sessionCapabilities")),
+          entries,
+        );
+      } catch (error) {
+        if (error instanceof InvalidSessionCapabilityError) throw new OAuthError(error.message, "invalid_scope", 400);
+        throw error;
+      }
+      let capabilities: SessionCapabilityMap;
+      try {
+        capabilities = normalizeSessionCapabilities(submittedIds, submittedCapabilities);
+      } catch (error) {
+        if (error instanceof InvalidSessionCapabilityError) throw new OAuthError(error.message, "invalid_scope", 400);
+        throw error;
+      }
       const accessible = await prisma.session.findMany({
-        where: session.user.role === "SUPERADMIN"
+        where: account.role === "SUPERADMIN"
           ? { id: { in: submittedIds } }
-          : { id: { in: submittedIds }, OR: [{ userId: session.user.id }, { sessionAccesses: { some: { userId: session.user.id } } }] },
+          : { id: { in: submittedIds }, userId: session.user.id },
         select: { id: true },
       });
       if (accessible.length !== new Set(submittedIds).size) throw new OAuthError("One or more selected sessions are not accessible", "access_denied", 403);
-      const approved = await approveAuthorizationRequest(requestId, session.user.id, accessible.map((item) => item.id));
+      const approved = await approveAuthorizationRequest(requestId, session.user.id, accessible.map((item) => item.id), capabilities);
       result = approved;
     }
     const basePath = requestBasePath(request.headers);

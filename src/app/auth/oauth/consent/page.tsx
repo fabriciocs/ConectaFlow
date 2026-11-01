@@ -7,6 +7,7 @@ import { headers } from "next/headers";
 import { requestBasePath, withBasePath } from "@/lib/base-path";
 import { getBrandConfig } from "@/lib/branding-server";
 import { BrandMark } from "@/components/auth/brand-mark";
+import { OAuthSessionSelector } from "@/components/auth/oauth-session-selector";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,7 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
     const login = new URLSearchParams({ callbackUrl });
     redirect(withBasePath(`/auth/login?${login.toString()}`, basePath));
   }
-  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true } });
+  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true, role: true } });
   if (!account?.emailVerified) redirect(withBasePath("/auth/login?emailVerificationRequired=1", basePath));
   const dashboardPath = withBasePath("/dashboard", basePath);
   if (!requestId) redirect(dashboardPath);
@@ -28,9 +29,9 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
   const t = await getTranslations("oauthConsent");
   const brand = await getBrandConfig();
   const sessions = await prisma.session.findMany({
-    where: session.user.role === "SUPERADMIN"
+    where: account.role === "SUPERADMIN"
       ? {}
-      : { OR: [{ userId: session.user.id }, { sessionAccesses: { some: { userId: session.user.id } } }] },
+      : { userId: session.user.id },
     select: { id: true, sessionId: true, name: true },
     orderBy: { name: "asc" },
   });
@@ -51,14 +52,7 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
           <fieldset className="mt-5 rounded-lg border p-4">
             <legend className="px-1 text-sm font-medium">{t("limitSessions")}</legend>
             <p className="mb-3 text-xs text-muted-foreground">{t("sessionHint")}</p>
-            <div className="max-h-48 space-y-2 overflow-auto">
-              {sessions.map((item) => (
-                <label key={item.id} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" name="sessionIds" value={item.id} form="oauth-consent" />
-                  <span>{item.name} <span className="text-muted-foreground">({item.sessionId})</span></span>
-                </label>
-              ))}
-            </div>
+            <OAuthSessionSelector sessions={sessions} />
           </fieldset>
         )}
         <form id="oauth-consent" action={withBasePath("/api/oauth/authorize/decision", basePath)} method="post" className="mt-6 flex gap-3">

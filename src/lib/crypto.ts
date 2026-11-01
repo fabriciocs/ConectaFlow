@@ -5,15 +5,30 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // Standard 96-bit IV for GCM
 const PREFIX = "enc:v1:";
 
+export function isEncryptedData(data: unknown): data is string {
+    return typeof data === "string" && data.startsWith(PREFIX);
+}
+
 /**
  * Derives a 32-byte encryption key from environment secrets.
  */
 function getDerivedKey(): Buffer {
-    const secret = process.env.ENCRYPTION_KEY || process.env.AUTH_SECRET;
+    const secret = process.env.WA_AKG_AUTH_STATE_KEY || process.env.ENCRYPTION_KEY || (process.env.NODE_ENV !== "production" ? process.env.AUTH_SECRET : undefined);
     if (!secret) {
-        throw new Error("ENCRYPTION_KEY or AUTH_SECRET must be defined in environment variables");
+        throw new Error("WA_AKG_AUTH_STATE_KEY or ENCRYPTION_KEY must be defined in production");
+    }
+    if (process.env.NODE_ENV === "production" && secret.length < 32) {
+        throw new Error("WA_AKG_AUTH_STATE_KEY or ENCRYPTION_KEY must contain at least 32 characters in production");
     }
     return crypto.createHash("sha256").update(secret).digest();
+}
+
+export function assertAuthStateEncryptionConfigured() {
+    if (process.env.NODE_ENV === "production") {
+        const secret = process.env.WA_AKG_AUTH_STATE_KEY || process.env.ENCRYPTION_KEY;
+        if (!secret) throw new Error("WA_AKG_AUTH_STATE_KEY or ENCRYPTION_KEY must be defined in production");
+        if (secret.length < 32) throw new Error("WA_AKG_AUTH_STATE_KEY or ENCRYPTION_KEY must contain at least 32 characters in production");
+    }
 }
 
 /**

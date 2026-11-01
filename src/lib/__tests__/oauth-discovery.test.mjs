@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   appOrigin,
   authorizationRedirectWithIssuer,
+  canonicalMcpResource,
   mcpResourceUrl,
   protectedResourceMetadata,
   protectedResourceMetadataUrl,
@@ -36,6 +37,26 @@ test("explicit OAuth issuer remains separate from the WA-AKG public origin", () 
   });
   assert.equal(metadata.resource, "https://wa-akg.example.test/mcp");
   assert.deepEqual(metadata.authorization_servers, ["https://identity.example.test/tenant"]);
+});
+
+test("canonical MCP resource keeps the public origin when the issuer is separate", () => {
+  assert.equal(
+    canonicalMcpResource({
+      configuredOrigin: "https://wa-akg.example.test",
+      configuredIssuer: "https://identity.example.test/tenant",
+      basePath: "/wa-akg",
+      endpointPath: "/mcp",
+    }),
+    "https://wa-akg.example.test/wa-akg/mcp",
+  );
+  assert.equal(
+    canonicalMcpResource({
+      configuredOrigin: "https://wa-akg.example.test",
+      configuredIssuer: "https://wa-akg.example.test/wa-akg",
+      endpointPath: "/mcp",
+    }),
+    "https://wa-akg.example.test/wa-akg/mcp",
+  );
 });
 
 test("explicit OAuth issuer preserves valid paths and rejects query strings or fragments", () => {

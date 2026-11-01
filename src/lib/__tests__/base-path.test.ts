@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clientBasePath, normalizeBasePath, requestBasePath, requestPublicOrigin, withBasePath, withoutBasePath } from "../base-path";
+import { clientBasePath, normalizeBasePath, requestBasePath, requestPublicOrigin, safeCallbackPath, withBasePath, withoutBasePath } from "../base-path";
 
 test("normalizes the reverse-proxy prefix and applies it exactly once", () => {
   assert.equal(normalizeBasePath("/wa-akg/"), "/wa-akg");
@@ -24,6 +24,13 @@ test("strips only the configured prefix while preserving the route", () => {
   assert.equal(withoutBasePath("/wa-akg/dashboard/chat/123", "/wa-akg"), "/dashboard/chat/123");
   assert.equal(withoutBasePath("/wa-akg", "/wa-akg"), "/");
   assert.equal(withoutBasePath("/dashboard", "/wa-akg"), "/dashboard");
+});
+
+test("keeps login callback URLs same-origin and prefix-safe", () => {
+  assert.equal(safeCallbackPath("/auth/oauth/consent?requestId=abc", "/wa-akg"), "/wa-akg/auth/oauth/consent?requestId=abc");
+  assert.equal(safeCallbackPath("https://attacker.example.test/steal", "/wa-akg"), "/wa-akg/dashboard");
+  assert.equal(safeCallbackPath("//attacker.example.test/steal", "/wa-akg"), "/wa-akg/dashboard");
+  assert.equal(safeCallbackPath("/\\\\attacker.example.test", "/wa-akg"), "/wa-akg/dashboard");
 });
 
 test("reads the runtime prefix rendered on the document", () => {

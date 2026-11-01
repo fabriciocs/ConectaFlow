@@ -1,5 +1,4 @@
 import { prisma } from "./prisma";
-import crypto from "crypto";
 import { normalizeMessageContent, downloadMediaMessage, type WAMessage, type WAMessageContent, type WAMessageKey } from "@whiskeysockets/baileys";
 import type { Prisma } from "@prisma/client";
 import { writeFile, mkdir } from "fs/promises";
@@ -16,6 +15,20 @@ import {
 } from "./security";
 import { sanitizeWebhookLog } from "./webhook-redaction";
 import { revealWebhookRequestHeaders } from "./webhook-headers";
+import { signWebhookBody } from "./webhook-signature";
+import {
+    buildInboundWebhookEnvelope,
+    markInboundEventCompleted,
+    markInboundEventFailed,
+    markInboundEventQueued,
+    recordInboundEvent,
+    type InboundWebhookEnvelope,
+} from "@/modules/whatsapp/inbound-event.service";
+
+export interface WebhookDispatchOptions {
+    /** Receipt created before media download/message persistence. */
+    existingReceiptEventId?: string;
+}
 
 export {
     mergeRequestHeaders,
@@ -37,12 +50,7 @@ export type WebhookEventType =
     | "message.edited"
     | "test";
 
-interface WebhookPayload {
-    event: WebhookEventType;
-    sessionId: string;
-    timestamp: string;
-    data: unknown;
-}
+type WebhookPayload = InboundWebhookEnvelope;
 
 type WebhookMessageInput = Pick<WAMessage, "key"> & {
     message?: WAMessageContent | Record<string, unknown> | null;
@@ -91,7 +99,8 @@ function normalizedWebhookContent(message: WebhookMessageInput["message"]): WAMe
 export async function dispatchWebhook(
     sessionId: string,
     event: WebhookEventType,
-    data: unknown
+    data: unknown,
+    options: WebhookDispatchOptions = {},
 ) {
     try {
         // Get the session to find the userId
@@ -105,12 +114,46 @@ export async function dispatchWebhook(
             return;
         }
 
-        // Find all active webhooks for this user/session, shared access, and superadmins
-        const accesses = await prisma.sessionAccess.findMany({
-            where: { sessionId: session.id },
-            select: { userId: true }
-        });
-        
+        const normalizedData = normalizePayloadData(event, data);
+        const payload: WebhookPayload = buildInboundWebhookEnvelope(
+            sessionId,
+            session.userId,
+            event,
+            normalizedData,
+        );
+
+        // Persist before any external fan-out. A duplicate receipt is not
+        // dispatched again; explicit replay is handled by the inbound service.
+        const receipt = options.existingReceiptEventId
+            ? {
+                created: true,
+                conflict: false,
+                event: await prisma.inboundEvent.findUnique({
+                    where: { eventId: options.existingReceiptEventId },
+                }),
+            }
+            : await recordInboundEvent({
+                sessionDbId: session.id,
+                sessionId,
+                event,
+                data: normalizedData,
+                payload,
+            });
+
+        if (!receipt.event) {
+            logger.error("Webhook", `Inbound receipt ${options.existingReceiptEventId ?? payload.eventId} not found`);
+            return;
+        }
+
+        if (receipt.conflict) {
+            logger.error("Webhook", `Inbound event conflict for ${payload.eventId}`);
+            return;
+        }
+        if (!receipt.created) return;
+
+        // Shared SessionAccess is legacy and is intentionally not sufficient
+        // for webhook delivery. Keep fan-out aligned with session-access.ts:
+        // the owner and SUPERADMIN are the only authorized recipients.
         const superadmins = await prisma.user.findMany({
             where: { role: 'SUPERADMIN' },
             select: { id: true }
@@ -118,7 +161,6 @@ export async function dispatchWebhook(
         
         const userIds = [
             session.userId, 
-            ...accesses.map(a => a.userId),
             ...superadmins.map(s => s.id)
         ];
 
@@ -127,19 +169,12 @@ export async function dispatchWebhook(
                 isActive: true,
                 OR: [
                     { sessionId: null, userId: { in: userIds } }, // Global webhooks
-                    { sessionId: session.id } // Session-specific webhooks
+                    { sessionId: session.id, userId: { in: userIds } } // Session-specific webhooks
                 ]
             }
         });
 
-        if (webhooks.length === 0) return;
-
-        const payload: WebhookPayload = {
-            event,
-            sessionId,
-            timestamp: new Date().toISOString(),
-            data: normalizePayloadData(event, data) // Normalize data before sending
-        };
+        const deliveries: Promise<unknown>[] = [];
 
         // Dispatch to all matching webhooks
         for (const webhook of webhooks) {
@@ -156,13 +191,26 @@ export async function dispatchWebhook(
                 allowLocal?: boolean;
             };
 
-            // Send webhook in background
-            sendWebhookRequest(webhook.url, payload, webhook.secret, webhook.id, {
+            deliveries.push(sendWebhookRequest(webhook.url, payload, webhook.secret, webhook.id, {
                 requestHeaders: configuredWebhook.requestHeaders,
                 allowLocal: configuredWebhook.allowLocal === true,
-            }).catch(err => {
-                logger.error("Webhook", `Webhook ${webhook.id} failed:`, err);
-            });
+            }));
+        }
+
+        if (deliveries.length === 0) {
+            await markInboundEventCompleted(payload.eventId);
+            return;
+        }
+
+        await markInboundEventQueued(payload.eventId);
+        const results = await Promise.allSettled(deliveries);
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length > 0) {
+            const reason = failures[0]?.reason instanceof Error ? failures[0].reason.message : "Webhook delivery failed";
+            await markInboundEventFailed(payload.eventId, reason);
+            logger.error("Webhook", `Inbound event ${payload.eventId} failed for ${failures.length} delivery(ies)`);
+        } else {
+            await markInboundEventCompleted(payload.eventId);
         }
     } catch (error) {
         logger.error("Webhook", "Dispatch error:", error);
@@ -211,11 +259,7 @@ export function buildWebhookRequestHeaders(
     };
 
     if (secret) {
-        const signature = crypto
-            .createHmac("sha256", secret)
-            .update(body)
-            .digest("hex");
-        internal["X-Webhook-Signature"] = `sha256=${signature}`;
+        internal["X-Webhook-Signature"] = signWebhookBody(secret, body);
     }
 
     return mergeRequestHeaders(configured, internal);
@@ -372,15 +416,12 @@ export async function testWebhook(
 }> {
     const startedAt = Date.now();
 
-    const testPayload: WebhookPayload = {
-        event: "test",
-        sessionId: "test",
-        timestamp: new Date().toISOString(),
-        data: {
-            message: "This is a test webhook from WA-AKG",
-            timestamp: new Date().toISOString()
-        }
-    };
+    const testPayload: WebhookPayload = buildInboundWebhookEnvelope(
+        "test",
+        "test",
+        "test",
+        { message: "This is a test webhook from WA-AKG" },
+    );
 
     const body = JSON.stringify(testPayload, jsonReplacer);
     // Keep internal headers available if parsing user configuration fails, so
@@ -600,7 +641,12 @@ function getOwnJid(sessionId: string): string | null {
     }
 }
 
-export async function onMessageReceived(sessionId: string, message: WebhookMessageInput, existingFileUrl?: string | null) {
+export async function onMessageReceived(
+    sessionId: string,
+    message: WebhookMessageInput,
+    existingFileUrl?: string | null,
+    inboundEventId?: string | null,
+) {
     // Re-calculate fields to match store logic EXACTLY
     const remoteJid = message.key?.remoteJid || "";
     const fromMe = message.key?.fromMe || false;
@@ -696,7 +742,7 @@ export async function onMessageReceived(sessionId: string, message: WebhookMessa
         caption: normalized.caption,
         quoted: quoted,
 
-    });
+    }, inboundEventId ? { existingReceiptEventId: inboundEventId } : undefined);
 }
 
 /**

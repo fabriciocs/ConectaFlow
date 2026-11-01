@@ -54,6 +54,7 @@ export function OnboardingFlow() {
       setSessionId(createdSessionId);
       setStep(1);
       window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId: createdSessionId, name: name.trim(), connected: false }));
+      router.push(`/dashboard/sessions/${encodeURIComponent(createdSessionId)}?onboarding=1`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : sessionsT("createdFailed")); }
     finally { setLoading(false); }
   }

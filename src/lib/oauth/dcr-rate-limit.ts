@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { prisma } from "@/lib/prisma";
 
 export const DCR_REGISTRATION_LIMIT = 10;
 export const DCR_REGISTRATION_WINDOW_MS = 60 * 60 * 1000;
@@ -58,6 +59,7 @@ const registrationRateLimit = createDcrRegistrationRateLimiter();
  * reverse-proxy chain; invalid or absent addresses share a conservative bucket.
  */
 export function trustedProxyClientIp(request: Request): string {
+  if (process.env.WA_AKG_TRUSTED_PROXY_HEADERS !== "true") return "unknown";
   const forwardedFor = request.headers.get("x-forwarded-for");
   const firstAddress = forwardedFor?.split(",", 1)[0]?.trim();
   return firstAddress && isIP(firstAddress) ? firstAddress : "unknown";
@@ -65,4 +67,49 @@ export function trustedProxyClientIp(request: Request): string {
 
 export function checkDcrRegistrationRateLimit(ip: string, now?: number) {
   return registrationRateLimit(ip, now);
+}
+
+/** Distributed fixed-window limiter backed by the application database. */
+export async function checkOAuthRateLimitDistributed(
+  namespace: string,
+  identity: string,
+  options: { limit: number; windowMs: number },
+  now = Date.now(),
+): Promise<DcrRateLimitResult> {
+  const key = `${namespace}:${identity}`;
+  const { limit, windowMs } = options;
+  const current = new Date(now);
+  const resetAt = new Date(now + windowMs);
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // One conditional upsert is the increment operation. The subsequent
+      // row lock makes the decision consistent across application replicas.
+      await tx.$executeRaw`
+        INSERT INTO \`OAuthRateLimitBucket\` (\`key\`, \`count\`, \`resetAt\`, \`updatedAt\`)
+        VALUES (${key}, 1, ${resetAt}, ${current})
+        ON DUPLICATE KEY UPDATE
+          \`count\` = IF(\`resetAt\` <= ${current}, 1, \`count\` + 1),
+          \`resetAt\` = IF(\`resetAt\` <= ${current}, ${resetAt}, \`resetAt\`),
+          \`updatedAt\` = ${current}
+      `;
+      const [bucket] = await tx.$queryRaw<Array<{ count: number; resetAt: Date }>>`
+        SELECT \`count\`, \`resetAt\`
+        FROM \`OAuthRateLimitBucket\`
+        WHERE \`key\` = ${key}
+        FOR UPDATE
+      `;
+      if (!bucket || bucket.count <= limit) return { allowed: true, retryAfterSeconds: 0 };
+      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt.getTime() - now) / 1000)) };
+    });
+  } catch {
+    // Authentication abuse controls fail closed when the shared store is unavailable.
+    return { allowed: false, retryAfterSeconds: 60 };
+  }
+}
+
+export function checkDcrRegistrationRateLimitDistributed(ip: string, now = Date.now()) {
+  return checkOAuthRateLimitDistributed("dcr", ip, {
+    limit: DCR_REGISTRATION_LIMIT,
+    windowMs: DCR_REGISTRATION_WINDOW_MS,
+  }, now);
 }

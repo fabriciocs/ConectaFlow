@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { apiUrl } from "@/lib/api-url";
 
 type Client = { clientId: string; name: string; description: string | null; redirectUris: string[]; allowedScopes: string[]; grantTypes: string[]; isConfidential: boolean; isActive: boolean };
-type Grant = { clientId: string; clientName: string; scope: string[]; sessionScope: string[] | null; createdAt: string };
+type Grant = { userId?: string; userEmail?: string | null; clientId: string; clientName: string; scope: string[]; sessionScope: string[] | null; createdAt: string };
 const scopes = ["api:read", "api:write", "mcp:read", "mcp:write", "sessions:read"];
 
 async function readJson(response: Response) {
@@ -24,10 +24,18 @@ export default function OAuthManagement({ canManage }: { canManage: boolean }) {
   const [createdClientId, setCreatedClientId] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mcpKey, setMcpKey] = useState<string | null>(null);
+  const [mcpConfigured, setMcpConfigured] = useState(false);
+  const [mcpKeyPrefix, setMcpKeyPrefix] = useState<string | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpMessage, setMcpMessage] = useState("");
 
   const reload = useCallback(async () => {
     const grantResult = await fetch(apiUrl("/api/oauth/grants"), { cache: "no-store" }).then(readJson);
     setGrants(grantResult);
+    const apiKeyResult = await fetch(apiUrl("/api/user/api-key"), { cache: "no-store" }).then(readJson);
+    setMcpConfigured(Boolean(apiKeyResult.data?.configured));
+    setMcpKeyPrefix(apiKeyResult.data?.prefix ?? null);
     if (canManage) setClients(await fetch(apiUrl("/api/oauth/clients"), { cache: "no-store" }).then(readJson));
   }, [canManage]);
 
@@ -57,13 +65,36 @@ export default function OAuthManagement({ canManage }: { canManage: boolean }) {
     finally { setBusy(false); }
   }
 
-  async function revokeGrant(clientId: string) {
+  async function revokeGrant(grant: Grant) {
     setBusy(true);
     try {
-      await fetch(apiUrl(`/api/oauth/grants/${encodeURIComponent(clientId)}`), { method: "DELETE" }).then(readJson);
+      const query = canManage && grant.userId ? `?${new URLSearchParams({ userId: grant.userId }).toString()}` : "";
+      await fetch(apiUrl(`/api/oauth/grants/${encodeURIComponent(grant.clientId)}${query}`), { method: "DELETE" }).then(readJson);
       setMessage(t("accessRevoked")); await reload();
     } catch (error) { setMessage(error instanceof Error ? error.message : t("revokeError")); }
     finally { setBusy(false); }
+  }
+
+  async function setupLocalMcp() {
+    setMcpBusy(true); setMcpMessage(""); setMcpKey(null);
+    try {
+      const result = await fetch(apiUrl("/api/user/mcp/setup"), { method: "POST" }).then(readJson);
+      setMcpConfigured(Boolean(result.data?.configured));
+      setMcpKeyPrefix(result.data?.prefix ?? null);
+      setMcpKey(result.data?.apiKey ?? null);
+      setMcpMessage(result.data?.created ? t("mcpKeyGenerated") : t("mcpAlreadyConfigured"));
+    } catch (error) { setMcpMessage(error instanceof Error ? error.message : t("mcpSetupError")); }
+    finally { setMcpBusy(false); }
+  }
+
+  async function copyMcpKey() {
+    if (!mcpKey) return;
+    try {
+      await navigator.clipboard.writeText(mcpKey);
+      setMcpMessage(t("mcpKeyCopied"));
+    } catch {
+      setMcpMessage(t("mcpCopyError"));
+    }
   }
 
   return (
@@ -72,12 +103,27 @@ export default function OAuthManagement({ canManage }: { canManage: boolean }) {
       {message && <p role="status" className="rounded-md border p-3 text-sm">{message}</p>}
       {createdClientId && <p className="break-all rounded-md border border-primary p-3 text-sm">{t("clientId")}: <code>{createdClientId}</code></p>}
 
+      <section className="space-y-3 rounded-lg border p-4">
+        <h2 className="text-xl font-medium">{t("mcpSetupTitle")}</h2>
+        <p className="text-sm text-muted-foreground">{t("mcpSetupDescription")}</p>
+        <button disabled={mcpBusy} onClick={setupLocalMcp} className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground">
+          {mcpBusy ? t("mcpSettingUp") : mcpConfigured ? t("mcpConfiguredButton") : t("mcpSetupButton")}
+        </button>
+        {mcpConfigured && !mcpKey && <p className="text-xs text-muted-foreground">{t("mcpExistingKey", { prefix: mcpKeyPrefix ?? "—" })}</p>}
+        {mcpMessage && <p role="status" className="text-sm">{mcpMessage}</p>}
+        {mcpKey && <div className="space-y-2 rounded-md border border-primary p-3">
+          <p className="text-sm font-medium">{t("mcpKeyOneTime")}</p>
+          <code className="block break-all text-xs">{mcpKey}</code>
+          <button onClick={copyMcpKey} className="rounded-md border px-3 py-2 text-sm">{t("mcpCopyKey")}</button>
+        </div>}
+      </section>
+
       <section className="space-y-3">
         <h2 className="text-xl font-medium">{t("connectedClients")}</h2>
         {grants.length === 0 ? <p className="text-sm text-muted-foreground">{t("noActiveGrants")}</p> : grants.map((grant) => (
-          <article key={grant.clientId} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
-            <div><h3 className="font-medium">{grant.clientName}</h3><p className="text-sm text-muted-foreground">{grant.scope.join(" ")}</p><p className="text-xs text-muted-foreground">{grant.sessionScope ? t("limitedSessions", { count: grant.sessionScope.length }) : t("allSessions")}</p></div>
-            <button disabled={busy} onClick={() => revokeGrant(grant.clientId)} className="rounded-md border px-3 py-2 text-sm">{t("revokeAccess")}</button>
+          <article key={`${grant.userId ?? "current-user"}:${grant.clientId}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+            <div><h3 className="font-medium">{grant.clientName}</h3>{canManage && grant.userEmail && <p className="text-xs text-muted-foreground">{grant.userEmail}</p>}<p className="text-sm text-muted-foreground">{grant.scope.join(" ")}</p><p className="text-xs text-muted-foreground">{grant.sessionScope ? t("limitedSessions", { count: grant.sessionScope.length }) : t("allSessions")}</p></div>
+            <button disabled={busy} onClick={() => revokeGrant(grant)} className="rounded-md border px-3 py-2 text-sm">{t("revokeAccess")}</button>
           </article>
         ))}
       </section>

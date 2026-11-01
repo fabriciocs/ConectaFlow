@@ -11,6 +11,16 @@ npm-debug.log*
 # Build artifacts
 .next
 out
+.plugin-build
+*.zip
+
+# Runtime data and credentials must never enter an image build context
+data
+uploads
+*.db
+*.sqlite
+.env.validation
+Caddyfile.validation
 
 # Source control / logs
 *.log

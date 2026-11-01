@@ -359,7 +359,7 @@ Antes de escolher p95, disponibilidade, RTO/RPO e capacidade máxima, coletar ba
 | Conteúdo WhatsApp, AuthState e segredos de integração no schema/volume. | Alto impacto de exfiltração e retenção indefinida. | Classificação, envelope encryption, redaction, TTL e processo de exclusão. |
 | Webhooks controlados por usuário. | SSRF, vazamento de rede ou abuso de retry. | Egress policy, validação DNS/IP, redirect off, quotas e assinaturas. |
 | MCP/OAuth e DCR em mudanças locais ainda não aprovadas. | Cliente pode registrar redirect inseguro ou obter ferramenta excessiva. | Fechar ADR-006 e executar testes adversariais antes de habilitar. |
-| Socket.IO e transporte MCP em memória. | Afinidade de instância limita réplicas; restart invalida sessões MCP. | Documentar reconnect e adotar pub/sub/adapter quando necessário. |
+| Transporte MCP permanece em memória e Socket.IO usa adapter local por padrão. | Restart invalida sessões MCP; sem Redis, eventos não atravessam réplicas. | Ativar `SOCKET_IO_DISTRIBUTED=true` com Redis ACL/TLS e sticky sessions no proxy; validar reconnect e operação do transporte MCP em cada réplica. |
 | Documentação e runtime divergentes. | Operação pode executar comando ou migration inadequados. | Uma fonte canônica por operação; CI verifica rotas, migrations, config e docs. |
 | Escala, tenancy e retenção não especificadas. | Escolhas de broker, workspace e custo podem ser prematuras. | Decidir por métricas e entrevista com operador/usuários antes de infraestrutura adicional. |
 

@@ -35,6 +35,20 @@ export function withBasePath(path: string, basePath: string): string {
   return `${basePath}${pathname}${suffix}`;
 }
 
+export function safeCallbackPath(value: string | null | undefined, basePath: string, fallback = "/dashboard"): string {
+  const safeFallback = withBasePath(fallback, basePath);
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || /[\u0000-\u001f]/.test(value)) {
+    return safeFallback;
+  }
+  try {
+    const parsed = new URL(value, "https://wa-akg.invalid");
+    if (parsed.origin !== "https://wa-akg.invalid") return safeFallback;
+    return withBasePath(`${parsed.pathname}${parsed.search}${parsed.hash}`, basePath);
+  } catch {
+    return safeFallback;
+  }
+}
+
 export function withoutBasePath(path: string, basePath: string): string {
   if (!basePath || (path !== basePath && !path.startsWith(`${basePath}/`))) return path;
   return path.slice(basePath.length) || "/";

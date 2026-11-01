@@ -82,7 +82,35 @@ By default, the project might be configured for **MySQL** or **PostgreSQL**. To 
     npm run db:push
     ```
 
-## 5. Creating an Admin User
+## 5. Initial seed and administrator
+
+The initial Prisma seed ensures the fixed SUPERADMIN account
+`fabriciodacunhasantos@gmail.com`. It is idempotent: an existing account is
+promoted without replacing its password. A new account requires
+`SEED_ADMIN_PASSWORD` (or `ADMIN_PASSWORD`) and the value is never stored in
+the repository.
+
+Run it only after reviewing `DATABASE_URL` and confirming the target database:
+
+```cmd
+set "SEED_ADMIN_PASSWORD=use-a-strong-local-value"
+npx prisma db seed
+set SEED_ADMIN_PASSWORD=
+```
+
+For Docker Compose, use the migration service with the seed command so the
+database connection is provided by the Compose environment:
+
+```cmd
+set "SEED_ADMIN_PASSWORD=use-a-strong-local-value"
+docker compose --profile ops run --rm -e SEED_ADMIN_PASSWORD migrate node prisma/seed.mjs
+set SEED_ADMIN_PASSWORD=
+```
+
+Do not place a real password in source control, documentation or a committed
+`.env` file.
+
+## 6. Creating another Admin User
 
 After setting up the database, you need a **SUPERADMIN** user to access the dashboard settings.
 We included a script to help you create one quickly.
@@ -100,7 +128,7 @@ npm run make-admin admin@example.com password123
 -   If the user **does not exist**, it will be created with `SUPERADMIN` role.
 -   If the user **already exists**, it will be promoted to `SUPERADMIN` (password ignored).
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 -   **Connection Error**: Check if your database server is running and the credentials in `.env` are correct.
 -   **Prisma Client Error**: If you change the schema, always run `npm run db:push` or `npx prisma generate` to update the client.

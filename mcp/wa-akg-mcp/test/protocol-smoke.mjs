@@ -16,8 +16,8 @@ test("MCP initializes, lists safe tools and reports runtime metadata", async () 
     env: {
       ...process.env,
       WA_AKG_API_BASE_URL: "http://127.0.0.1:3000/api",
-      WA_AKG_API_KEY: "",
-      WA_AKG_MCP_WRITE_ALLOWLIST: "",
+      WA_AKG_API_KEY: "test-api-key",
+      WA_AKG_MCP_CREDENTIAL_CAPABILITIES: JSON.stringify({ scopes: ["mcp:read", "api:read", "sessions:read"], sessionCapabilities: { "test-session": "READ" }, operationAllowlist: [] }),
       WA_AKG_MCP_ALLOW_REMOTE_API: "false"
     }
   });

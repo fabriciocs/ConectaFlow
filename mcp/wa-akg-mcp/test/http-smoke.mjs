@@ -9,7 +9,6 @@ process.env.NEXT_PUBLIC_BASE_PATH = "/wa-akg";
 process.env.BASE_URL = "https://wa-akg.example.test";
 process.env.WA_AKG_API_BASE_URL = "https://wa-akg.example.ngrok-free.dev/wa-akg/api";
 process.env.WA_AKG_API_KEY = "";
-process.env.WA_AKG_MCP_WRITE_ALLOWLIST = "*";
 process.env.WA_AKG_MCP_ALLOW_REMOTE_API = "true";
 
 const { createMcpHttpHandler } = await import("../src/http.mjs");
@@ -17,23 +16,34 @@ const { createMcpHttpHandler } = await import("../src/http.mjs");
 test("HTTP MCP endpoint enforces bearer auth and supports MCP initialization/tool discovery", async () => {
   const originalFetch = globalThis.fetch;
   let tokenScopes = ["mcp:read", "api:read", "sessions:read"];
+  let tokenResource = "https://wa-akg.example.test/wa-akg/mcp";
   const tokenSessionScope = ["test-session-db-id"];
+  let mockSessions = [{ id: "test-session", sessionId: "wa-test", name: "Mock session" }];
+  let createCalls = 0;
   globalThis.fetch = async (input, init) => {
     if (String(input).endsWith("/oauth/userinfo")) {
       const headers = new Headers(init?.headers);
       assert.equal(headers.get("ngrok-skip-browser-warning"), "true");
       const authorization = headers.get("authorization");
       if (authorization !== `Bearer ${token}`) return new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 });
-      return new Response(JSON.stringify({ sub: "test-user", wa_akg: { client_id: "test-client", scope: tokenScopes, session_scope: tokenSessionScope } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ sub: "test-user", wa_akg: { client_id: "test-client", scope: tokenScopes, session_scope: tokenSessionScope, session_capabilities: { "test-session": "WRITE" }, operation_allowlist: ["POST /messages/{sessionId}/{jid}/send", "POST /groups/{sessionId}/create"], resource: tokenResource } }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (new URL(String(input)).pathname.endsWith("/api/sessions")) {
       const headers = new Headers(init?.headers);
       assert.equal(headers.get("authorization"), `Bearer ${token}`);
       assert.equal(headers.get("ngrok-skip-browser-warning"), "true");
+      if (init?.method === "POST") {
+        createCalls += 1;
+        const body = JSON.parse(init.body);
+        assert.equal(body.name, "MCP Default Session");
+        assert.match(body.sessionId, /^mcp-[a-f0-9]{24}$/);
+        mockSessions = [{ id: "created-session", sessionId: body.sessionId, name: body.name }];
+        return new Response(JSON.stringify({ status: true, data: mockSessions[0] }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
       return new Response(JSON.stringify({
         status: true,
         message: "Sessions retrieved successfully",
-        data: [{ id: "test-session", sessionId: "wa-test", name: "Mock session" }],
+        data: mockSessions,
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     return originalFetch(input, init);
@@ -66,6 +76,15 @@ test("HTTP MCP endpoint enforces bearer auth and supports MCP initialization/too
       `Bearer resource_metadata="http://127.0.0.1:${address.port}/wa-akg/.well-known/oauth-protected-resource", error="invalid_token"`,
     );
     process.env.BASE_URL = configuredBaseUrl;
+
+    tokenResource = "https://wa-akg.example.test/wa-akg/not-mcp";
+    const wrongAudience = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "wrong-audience", version: "1" } } })
+    });
+    assert.equal(wrongAudience.status, 401);
+    tokenResource = "https://wa-akg.example.test/wa-akg/mcp";
 
     const initialized = await fetch(url, {
       method: "POST",
@@ -106,6 +125,16 @@ test("HTTP MCP endpoint enforces bearer auth and supports MCP initialization/too
     assert.equal(sessionsCall.status, 200, sessionsText);
     assert.match(sessionsText, /Mock session/);
 
+    mockSessions = [];
+    const readOnlyWithoutSession = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "read-only-no-session", version: "1" } } })
+    });
+    assert.equal(readOnlyWithoutSession.status, 200);
+    assert.equal(createCalls, 0, "read-only authentication must not create a session");
+    mockSessions = [{ id: "test-session", sessionId: "wa-test", name: "Mock session" }];
+
     tokenScopes = ["mcp:read", "api:read", "sessions:read", "mcp:write", "api:write"];
     const writeInitialized = await fetch(url, {
       method: "POST",
@@ -125,6 +154,15 @@ test("HTTP MCP endpoint enforces bearer auth and supports MCP initialization/too
     assert.match(writeListText, /wa_akg_post_messages_sessionid_jid_send/);
     assert.match(writeListText, /wa_akg_post_groups_sessionid_create/);
 
+    mockSessions = [];
+    const autoSessionInitialized = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 8, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "auto-session-test", version: "1" } } })
+    });
+    assert.equal(autoSessionInitialized.status, 200, await autoSessionInitialized.clone().text());
+    assert.equal(createCalls, 0, "MCP authentication must never create a session implicitly");
+
     tokenScopes = ["mcp:read", "api:read", "api:write"];
     const revokedWrite = await fetch(url, {
       method: "POST",
@@ -132,7 +170,7 @@ test("HTTP MCP endpoint enforces bearer auth and supports MCP initialization/too
       body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "wa_akg_post_messages_sessionid_jid_send", arguments: { sessionId: "test-session", jid: "test@example.com", body: { text: "mock-only" } } } })
     });
     assert.equal(revokedWrite.status, 200);
-    assert.match(await revokedWrite.text(), /current OAuth token does not grant this MCP tool/);
+    assert.match(await revokedWrite.text(), /current OAuth grant does not permit this MCP operation/);
   } finally {
     globalThis.fetch = originalFetch;
     await new Promise((resolve) => httpServer.close(resolve));

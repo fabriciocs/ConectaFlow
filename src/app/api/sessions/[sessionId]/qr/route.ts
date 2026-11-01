@@ -3,6 +3,8 @@ import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, isSessionOwner } from "@/lib/api-auth";
 import QRCode from "qrcode";
 
+const noStore = { "Cache-Control": "no-store" };
+
 // GET: Get QR code for session
 export async function GET(
     request: NextRequest,
@@ -51,7 +53,7 @@ export async function GET(
             success: true,
             qr: qr,
             base64: base64QR
-        });
+        }, { headers: noStore });
 
     } catch (error) {
         console.error("Get QR error:", error);

@@ -23,7 +23,7 @@ import { BrandMark } from '@/components/auth/brand-mark';
 import { useTranslations } from 'next-intl';
 import { LanguageSwitcher } from '@/components/language-switcher';
 import { apiUrl } from '@/lib/api-url';
-import { withBasePath } from '@/lib/base-path';
+import { safeCallbackPath, withBasePath } from '@/lib/base-path';
 import { useBranding } from '@/components/branding-provider';
 
 type LoginValues = { email: string; password: string };
@@ -38,7 +38,7 @@ function LoginForm() {
   const router = useRouter();
   const basePath = useAppBasePath();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get('callbackUrl') || '/dashboard';
+  const callbackUrl = useMemo(() => safeCallbackPath(searchParams.get('callbackUrl'), basePath), [basePath, searchParams]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
@@ -121,7 +121,7 @@ function LoginForm() {
           )}
 
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" aria-busy={loading}>
+            <form method="post" onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" aria-busy={loading}>
               <FormField
                 control={form.control}
                 name="email"

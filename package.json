@@ -17,7 +17,12 @@
     "mcp:start": "npm --prefix mcp/wa-akg-mcp start",
     "mcp:check": "npm --prefix mcp/wa-akg-mcp run check",
     "mcp:test": "npm --prefix mcp/wa-akg-mcp test",
-    "mcp:test:production-sessions": "npm --prefix mcp/wa-akg-mcp run test:production-sessions"
+    "mcp:test:production-sessions": "npm --prefix mcp/wa-akg-mcp run test:production-sessions",
+    "replica:harness": "node scripts/replica-harness/run.mjs",
+    "replica:preflight": "node scripts/replica-harness/real-preflight.mjs"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -34,6 +39,7 @@
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@socket.io/redis-adapter": "^8.3.0",
     "@tailwindcss/typography": "^0.5.19",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@whiskeysockets/baileys": "7.0.0-rc14",
@@ -62,6 +68,7 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
     "react-virtuoso": "^4.18.7",
+    "redis": "^4.7.0",
     "recharts": "^3.7.0",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.34.5",

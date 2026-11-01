@@ -12,8 +12,46 @@ const apiKey = process.env.WA_AKG_API_KEY?.trim();
 const timeoutMs = boundedInteger(process.env.WA_AKG_TIMEOUT_MS, 15000, 1000, 120000);
 const maxResponseBytes = boundedInteger(process.env.WA_AKG_MAX_RESPONSE_BYTES, 1000000, 1024, 10000000);
 const remoteApiAllowed = process.env.WA_AKG_MCP_ALLOW_REMOTE_API === "true";
-function getWriteAllowlist() {
-  return new Set((process.env.WA_AKG_MCP_WRITE_ALLOWLIST ?? "").split(",").map((entry) => entry.trim()).filter(Boolean));
+const LOCAL_SCOPE_NAMES = new Set(["api:read", "api:write", "mcp:read", "mcp:write", "sessions:read"]);
+
+function localCredentialContext() {
+  if (!apiKey) return null;
+  const raw = process.env.WA_AKG_MCP_CREDENTIAL_CAPABILITIES?.trim();
+  if (!raw) {
+    return {
+      authMethod: "local-api-key",
+      scopes: ["mcp:read", "api:read", "sessions:read"],
+      sessionScope: [],
+      sessionCapabilities: {},
+      operationAllowlist: [],
+    };
+  }
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const scopes = Array.isArray(value.scopes) && value.scopes.every((scope) => typeof scope === "string" && LOCAL_SCOPE_NAMES.has(scope))
+      ? [...new Set(value.scopes)] : null;
+    const rawCapabilities = value.sessionCapabilities;
+    if (!scopes || !rawCapabilities || typeof rawCapabilities !== "object" || Array.isArray(rawCapabilities)) return null;
+    const sessionCapabilities = {};
+    for (const [sessionId, capability] of Object.entries(rawCapabilities)) {
+      if (!sessionId || (capability !== "READ" && capability !== "WRITE")) return null;
+      sessionCapabilities[sessionId] = capability;
+    }
+    const operationAllowlist = Array.isArray(value.operationAllowlist) && value.operationAllowlist.every((operation) =>
+      typeof operation === "string" && /^[A-Z]+\s+\/[^*\s]+(?:[^*]*)$/.test(operation) && operation !== "*")
+      ? [...new Set(value.operationAllowlist)] : null;
+    if (!operationAllowlist) return null;
+    return {
+      authMethod: "local-api-key",
+      scopes,
+      sessionScope: Object.keys(sessionCapabilities),
+      sessionCapabilities,
+      operationAllowlist,
+    };
+  } catch {
+    return null;
+  }
 }
 export const server = new McpServer({ name: "wa-akg-mcp", version: "0.1.0" });
 const initializedServers = new WeakSet();
@@ -77,12 +115,14 @@ function createInputSchema(operation) {
   return shape;
 }
 export function isAllowedOperation(method, route, authContext) {
+  const effectiveAuthContext = authContext ?? localCredentialContext();
+  if (!effectiveAuthContext) return false;
   const verb = method.toLowerCase();
-  const scopes = Array.isArray(authContext?.scopes) ? authContext.scopes : null;
+  const scopes = Array.isArray(effectiveAuthContext.scopes) ? effectiveAuthContext.scopes : null;
   if (scopes && !scopes.includes("mcp:read")) return false;
   // Authentication, API credentials, pairing secrets and global administration
   // are not delegated through OAuth. The API rejects these paths independently.
-  if (/^\/(?:auth(?:\/|$)|oauth(?:\/|$)|swagger-auth(?:\/|$)|user\/api-key(?:\/|$)|users(?:\/|$)|settings\/system(?:\/|$)|sessions\/[^/]+\/qr(?:\/|$))/.test(route)) return false;
+  if (/^\/(?:auth(?:\/|$)|oauth(?:\/|$)|swagger-auth(?:\/|$)|user\/api-key(?:\/|$)|users(?:\/|$)|settings\/system(?:\/|$)|sessions\/[^/]+\/(?:qr|pair)(?:\/|$))/.test(route)) return false;
   // These endpoints are cookie-only or aggregate resources that cannot be
   // restricted to a single OAuth session by the current API contract.
   if (/^\/(?:media(?:\/|$)|notifications(?:\/|$))/.test(route)) return false;
@@ -100,8 +140,10 @@ export function isAllowedOperation(method, route, authContext) {
     }
   } else {
     if (!["post", "put", "patch", "delete"].includes(verb) || !writeRoots.has(root)) return false;
-    const writeAllowlist = getWriteAllowlist();
-    if (!writeAllowlist.has("*") && !writeAllowlist.has(operationKey(verb, route))) return false;
+    const configuredWrites = new Set(effectiveAuthContext.operationAllowlist ?? []);
+    const grantHasWriteCapability = effectiveAuthContext.authMethod === "oauth-user-delegation" && Object.values(effectiveAuthContext.sessionCapabilities ?? {}).includes("WRITE");
+    const operationAllowed = configuredWrites.has(operationKey(verb, route)) || (grantHasWriteCapability && configuredWrites.size === 0);
+    if (!operationAllowed) return false;
     // HTTP API writes also require api:write. mcp:write alone is not a bearer
     // permission for direct API writes, and the MCP server must not bypass that.
     if (scopes && (!scopes.includes("mcp:write") || !scopes.includes("api:write"))) return false;
@@ -109,12 +151,25 @@ export function isAllowedOperation(method, route, authContext) {
 
   // A session-limited grant can only see operations whose first resource
   // parameter identifies that session. The API repeats this check per call.
-  if (Array.isArray(authContext?.sessionScope)) {
+  if (Array.isArray(effectiveAuthContext.sessionScope)) {
     if (verb === "get" && route === "/sessions") return scopes?.includes("sessions:read") || scopes?.includes("api:read") || !scopes;
     const sessionRoute = /^\/(?:sessions\/\{(?:id|sessionId)\}|messages\/\{sessionId\}|contacts\/\{sessionId\}|groups\/\{sessionId\}|webhooks\/\{sessionId\}|autoreplies\/\{sessionId\}|scheduler\/\{sessionId\}|chat\/\{sessionId\}|chats\/\{sessionId\}|profile\/\{sessionId\}|labels\/\{sessionId\}|status\/\{sessionId\}|system\/monitor\/\{sessionId\})(?:\/|$)/;
     if (!sessionRoute.test(route)) return false;
   }
   return true;
+}
+
+export function isAllowedInvocation(method, route, args, authContext) {
+  if (!isAllowedOperation(method, route, authContext)) return false;
+  const verb = method.toLowerCase();
+  const sessionId = args?.sessionId ?? args?.id;
+  const effectiveAuthContext = authContext ?? localCredentialContext();
+  if (effectiveAuthContext?.authMethod === "local-api-key" && verb === "get" && effectiveAuthContext.scopes?.includes("api:read")) return true;
+  if (!effectiveAuthContext?.sessionCapabilities) return false;
+  if (!sessionId) return verb === "get" && route === "/sessions";
+  const capability = effectiveAuthContext.sessionCapabilities[String(sessionId)];
+  if (verb === "get") return capability === "READ" || capability === "WRITE";
+  return capability === "WRITE";
 }
 function pathForRoute(route, args) {
   return route.replace(/\{([^}]+)\}/g, (_match, name) => {
@@ -192,7 +247,7 @@ function registerApiTools(spec, targetServer = server, authContext) {
         annotations: { readOnlyHint: method === "get", destructiveHint: method === "delete", idempotentHint: ["get", "put", "delete"].includes(method), openWorldHint: false }
       }, async (args) => {
         try {
-          if (!isAllowedOperation(method, route, authContext)) throw new Error("The current OAuth token does not grant this MCP tool");
+          if (!isAllowedInvocation(method, route, args, authContext)) throw new Error("The current OAuth grant does not permit this MCP operation for the selected session");
           const result = await callApi(method, route, operation, args, authContext);
           return { content: [{ type: "text", text: JSON.stringify(result, null, 2).slice(0, maxResponseBytes) }] };
         } catch (error) {
@@ -209,7 +264,8 @@ export async function initializeMcpServer(targetServer = server, authContext) {
   const raw = await readFile(specPath, "utf8");
   const spec = JSON.parse(raw);
   if (!spec.openapi || !spec.paths) throw new Error(`Invalid OpenAPI document: ${specPath}`);
-  const count = registerApiTools(spec, targetServer, authContext);
+  const effectiveAuthContext = authContext ?? localCredentialContext();
+  const count = registerApiTools(spec, targetServer, effectiveAuthContext);
   targetServer.registerTool("wa_akg_server_info", {
     title: "WA-AKG MCP server information",
     description: "Returns safe runtime metadata and the configured API target without revealing credentials.",
@@ -217,14 +273,13 @@ export async function initializeMcpServer(targetServer = server, authContext) {
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, async () => {
     const baseUrl = safeBaseUrl();
-    const configuredWrites = getWriteAllowlist();
-    const availableWriteTools = Object.entries(spec.paths ?? {}).reduce((count, [route, item]) => count + Object.keys(item ?? {}).filter((method) => ["post", "put", "patch", "delete"].includes(method) && isAllowedOperation(method, route, authContext)).length, 0);
+    const availableWriteTools = Object.entries(spec.paths ?? {}).reduce((count, [route, item]) => count + Object.keys(item ?? {}).filter((method) => ["post", "put", "patch", "delete"].includes(method) && isAllowedOperation(method, route, effectiveAuthContext)).length, 0);
     return { content: [{ type: "text", text: JSON.stringify({
       server: "wa-akg-mcp", version: "0.1.0", openapiVersion: spec.openapi,
       apiTitle: spec.info?.title ?? "WA-AKG API", apiVersion: spec.info?.version ?? "unknown",
       apiBaseUrl: baseUrl.origin + baseUrl.pathname, apiKeyConfigured: Boolean(apiKey),
-      authentication: authContext ? "oauth-user-delegation" : (apiKey ? "local-api-key" : "none"),
-      writeToolsEnabled: availableWriteTools > 0, writeAllowlistMode: configuredWrites.has("*") ? "all" : (configuredWrites.size ? "explicit" : "disabled"), writeAllowlistCount: availableWriteTools, registeredApiTools: count
+      authentication: effectiveAuthContext?.authMethod ?? "none",
+      writeToolsEnabled: availableWriteTools > 0, writePolicy: authContext ? "grant-operation-capabilities" : "credential-explicit-capabilities", writeCapabilityCount: availableWriteTools, registeredApiTools: count
     }, null, 2) }] };
   });
   initializedServers.add(targetServer);

@@ -29,7 +29,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: wa-akg-app
     restart: unless-stopped
     init: true
     ports:
@@ -44,6 +43,8 @@ services:
       MYSQL_APP_USER: ${MYSQL_APP_USER:-wa_akg_app}
       MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:?Defina MYSQL_APP_PASSWORD no arquivo .env}
       AUTH_SECRET: ${AUTH_SECRET:?Defina AUTH_SECRET no arquivo .env}
+      WA_AKG_AUTH_STATE_KEY: ${WA_AKG_AUTH_STATE_KEY:?Defina WA_AKG_AUTH_STATE_KEY no arquivo .env}
+      WA_AKG_TRUSTED_PROXY_HEADERS: ${WA_AKG_TRUSTED_PROXY_HEADERS:-false}
       BASE_URL: ${BASE_URL:-http://localhost:43000}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:43000}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:43000}
@@ -59,13 +60,15 @@ services:
       REMOVE_BG_API_KEY: ${REMOVE_BG_API_KEY:-}
       WA_AKG_MCP_ENABLED: ${WA_AKG_MCP_ENABLED:-false}
       WA_AKG_MCP_HTTP_PATH: ${WA_AKG_MCP_HTTP_PATH:-/mcp}
-      WA_AKG_MCP_HTTP_TOKEN: ${WA_AKG_MCP_HTTP_TOKEN:-}
       WA_AKG_API_BASE_URL: ${WA_AKG_API_BASE_URL:-http://127.0.0.1:43000/api}
       WA_AKG_API_KEY: ${WA_AKG_API_KEY:-}
-      WA_AKG_MCP_WRITE_ALLOWLIST: ${WA_AKG_MCP_WRITE_ALLOWLIST:-}
+      WA_AKG_MCP_CREDENTIAL_CAPABILITIES: ${WA_AKG_MCP_CREDENTIAL_CAPABILITIES:-}
       WA_AKG_MCP_ALLOW_REMOTE_API: ${WA_AKG_MCP_ALLOW_REMOTE_API:-false}
       WA_AKG_TIMEOUT_MS: ${WA_AKG_TIMEOUT_MS:-15000}
       WA_AKG_MAX_RESPONSE_BYTES: ${WA_AKG_MAX_RESPONSE_BYTES:-1000000}
+      SOCKET_IO_DISTRIBUTED: ${SOCKET_IO_DISTRIBUTED:-false}
+      SOCKET_IO_REDIS_URL: ${SOCKET_IO_REDIS_URL:-}
+      SOCKET_IO_REDIS_KEY: ${SOCKET_IO_REDIS_KEY:-wa-akg:socket.io}
     depends_on:
       db:
         condition: service_healthy

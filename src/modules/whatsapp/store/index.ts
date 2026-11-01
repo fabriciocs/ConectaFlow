@@ -3,11 +3,13 @@ import type { WASocket, WAMessage } from "@whiskeysockets/baileys";
 import type { BotConfig, MessageType, Prisma } from "@prisma/client";
 import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { onMessageReceived, onMessageSent, dispatchWebhook, downloadAndSaveMedia } from "@/lib/webhook";
+import { buildInboundWebhookEnvelope, linkInboundEvent, recordInboundEvent } from "../inbound-event.service";
 import { handleBotCommand, setSessionStartTime } from "../bot/command-handler";
 import { resolveToPhoneJid, isLidJid, normalizeJid } from "@/lib/jid-utils";
 
 import { Server } from "socket.io";
 import { logger } from "@/lib/logger";
+import { getSessionPublicRoom } from "@/server/socket";
 
 export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server | null) => {
     // Set start time for uptime command
@@ -40,7 +42,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
         // Emit to socket room for real-time frontend updates
         if (type === 'notify' || type === 'append') {
-            io?.to(sessionId).emit('message.upsert', { messages, type });
+            io?.to(getSessionPublicRoom(sessionId)).emit('message.upsert', { messages, type });
         }
 
         // Ensure we have the database session ID
@@ -88,7 +90,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp
             }));
             logger.debug("Socket", `Emitting message.update for ${serialized.length} messages in session ${sessionId}`);
-            io?.to(sessionId).emit('message.update', serialized);
+            io?.to(getSessionPublicRoom(sessionId)).emit('message.update', serialized);
         }
     });
 
@@ -354,7 +356,7 @@ async function processAndSaveMessage(
                     where: { sessionId: dbSessionId, keyId: targetKeyId }
                 });
                 if (updated) {
-                    io?.to(sessionId).emit("message.update", [{
+                    io?.to(getSessionPublicRoom(sessionId)).emit("message.update", [{
                         ...updated,
                         timestamp: updated.timestamp instanceof Date ? updated.timestamp.toISOString() : updated.timestamp
                     }]);
@@ -410,6 +412,39 @@ async function processAndSaveMessage(
         }
         // Return null to indicate "Not New"
         return null;
+    }
+
+    // Record the inbound receipt before any media download or message write.
+    // The database uniqueness constraint is the final barrier against races.
+    let inboundEventId: string | null = null;
+    if (triggerWebhook && !fromMe) {
+        const inboundSession = await prisma.session.findUnique({
+            where: { id: dbSessionId },
+            select: { userId: true },
+        });
+
+        if (!inboundSession) {
+            logger.warn("Store", `Cannot record inbound event: session ${dbSessionId} not found`);
+            return null;
+        }
+
+        const event = "message.received" as const;
+        const payload = buildInboundWebhookEnvelope(sessionId, inboundSession.userId, event, msg);
+        const receipt = await recordInboundEvent({
+            sessionDbId: dbSessionId,
+            sessionId,
+            event,
+            data: msg,
+            payload,
+        });
+
+        if (!receipt.created) {
+            if (receipt.conflict) {
+                logger.error("Store", `Inbound event conflict for ${payload.eventId}`);
+            }
+            return null;
+        }
+        inboundEventId = receipt.event?.eventId ?? null;
     }
 
     // Debug fromMe issue (Keep this for a while)
@@ -565,6 +600,20 @@ async function processAndSaveMessage(
                 quoteId
             }
         });
+
+        if (inboundEventId) {
+            try {
+                const linked = await linkInboundEvent(inboundEventId, {
+                    messageId: newMessage.id,
+                    mediaRef: fileUrl,
+                });
+                if (!linked) {
+                    logger.warn("Store", `Inbound event ${inboundEventId} could not be linked to message ${newMessage.id}`);
+                }
+            } catch (error) {
+                logger.error("Store", `Failed to link inbound event ${inboundEventId}`, error);
+            }
+        }
         
         // Ensure contact exists (Upsert Contact)
         const finalRemoteJid = normalizeJid(normalizedRemoteJid);
@@ -615,7 +664,7 @@ async function processAndSaveMessage(
             if (fromMe) {
                 onMessageSent(sessionId, msg, fileUrl).catch(e => logger.error("Webhook", "Error in onMessageSent", e));
             } else {
-                onMessageReceived(sessionId, msg, fileUrl).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
+            onMessageReceived(sessionId, msg, fileUrl, inboundEventId).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
             }
         }
 

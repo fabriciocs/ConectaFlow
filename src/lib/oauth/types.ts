@@ -8,6 +8,7 @@ export const OAuthScope = {
 
 export type OAuthScopeName = (typeof OAuthScope)[keyof typeof OAuthScope];
 export type OAuthGrantType = "authorization_code" | "refresh_token" | "client_credentials";
+export type SessionCapability = "READ" | "WRITE";
 
 export interface OAuthClientRecord {
   id: string;
@@ -33,8 +34,11 @@ export interface OAuthPrincipal {
   tokenId: string;
   clientId: string;
   userId: string | null;
+  grantId: string | null;
   scope: string[];
   sessionScope: string[] | null;
+  sessionCapabilities: Record<string, SessionCapability> | null;
+  operationAllowlist: string[];
   resource: string | null;
   expiresAt: Date;
 }

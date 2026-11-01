@@ -3,6 +3,7 @@ import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, isSessionOwner } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { errorMessage } from "@/lib/error-message";
+import { normalizeWhatsAppPhone } from "@/lib/whatsapp-phone";
 
 export async function POST(
     request: NextRequest,
@@ -34,12 +35,15 @@ export async function POST(
 
         switch (action) {
             case "pair":
-                const { phoneNumber } = body;
+                if (user.authMethod === "oauth") {
+                    return NextResponse.json({ status: false, message: "Pairing codes are not available through OAuth", error: "Forbidden" }, { status: 403, headers: { "Cache-Control": "no-store" } });
+                }
+                const phoneNumber = normalizeWhatsAppPhone(body?.phoneNumber);
                 if (!phoneNumber) {
-                    return NextResponse.json({ status: false, message: "Phone number required for pairing" }, { status: 400 });
+                    return NextResponse.json({ status: false, message: "Enter a valid WhatsApp phone number with country code" }, { status: 400 });
                 }
                 const pairingCode = await waManager.requestPairingCode(sessionId, phoneNumber);
-                return NextResponse.json({ status: true, message: "Pairing code generated", data: { pairingCode } });
+                return NextResponse.json({ status: true, message: "Pairing code generated", data: { pairingCode } }, { headers: { "Cache-Control": "no-store" } });
 
             case "start":
                 await waManager.startSession(sessionId);

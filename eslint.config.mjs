@@ -22,6 +22,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Repository-local tooling state and generated plugin artifacts are not product code.
+    // Keep source linting enabled for src/, scripts/, and mcp/.
+    ".claude/**",
+    ".claude-flow/**",
+    ".swarm/**",
+    ".remote-desktop/**",
+    ".plugin-build/**",
   ]),
 ]);
 

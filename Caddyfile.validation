@@ -1,0 +1,26 @@
+:80 {
+    handle_path /wa-akg/* {
+        reverse_proxy app:43000 {
+            lb_policy cookie wa_akg_affinity
+            header_up X-Forwarded-Prefix /wa-akg
+            header_up X-Forwarded-Proto http
+            header_up X-Forwarded-Host {http.request.host}
+        }
+    }
+    handle /.well-known/* {
+        reverse_proxy app:43000 {
+            lb_policy cookie wa_akg_affinity
+            header_up X-Forwarded-Prefix /wa-akg
+            header_up X-Forwarded-Proto http
+            header_up X-Forwarded-Host {http.request.host}
+        }
+    }
+    handle {
+        reverse_proxy app:43000 {
+            lb_policy cookie wa_akg_affinity
+            header_up X-Forwarded-Prefix /wa-akg
+            header_up X-Forwarded-Proto http
+            header_up X-Forwarded-Host {http.request.host}
+        }
+    }
+}

@@ -2,6 +2,35 @@ import { Server, Socket } from "socket.io";
 import { prisma } from "../lib/prisma";
 import { canAccessSession } from "../lib/session-access";
 import { logger } from "../lib/logger";
+import { validateApiKeyValue } from "../lib/api-auth";
+import { isValidSessionId } from "../lib/session-id";
+
+export function getSessionPublicRoom(sessionId: string) {
+    return `session:public:${sessionId}`;
+}
+
+export function getSessionPrivateRoom(sessionId: string) {
+    return `session:${sessionId}:private`;
+}
+
+export function mayReceivePrivateSessionEvent(
+    user: { id: string; role: string; emailVerified: boolean } | undefined,
+    ownerId: string
+) {
+    return Boolean(user?.emailVerified && (user.id === ownerId || user.role === "SUPERADMIN"));
+}
+
+export function createPublicConnectionUpdate(status: string) {
+    return { status };
+}
+
+export function createPrivateConnectionUpdate(
+    status: string,
+    qr: string | null = null,
+    pairingCode: string | null = null
+) {
+    return { status, qr, pairingCode };
+}
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
     const cookies: Record<string, string> = {};
@@ -71,16 +100,13 @@ export function setupSocket(io: Server) {
             }
 
             // 2. Try API Key from auth payload or x-api-key header
-            const apiKey = 
-                (socket.handshake.auth?.apiKey as string) ||
-                (headers["x-api-key"] as string) ||
-                (socket.handshake.query?.apiKey as string);
+            const headerApiKey = headers["x-api-key"];
+            const apiKey =
+                (typeof socket.handshake.auth?.apiKey === "string" ? socket.handshake.auth.apiKey : undefined) ||
+                (typeof headerApiKey === "string" ? headerApiKey : undefined);
 
             if (apiKey && typeof apiKey === "string") {
-                const user = await prisma.user.findUnique({
-                    where: { apiKey },
-                    select: { id: true, role: true, email: true }
-                });
+                const user = await validateApiKeyValue(apiKey);
 
                 if (user) {
                     socket.data.user = {
@@ -112,9 +138,9 @@ export function setupSocket(io: Server) {
         });
 
         // 🛡️ Authorized Session Room Join
-        socket.on("join-session", async (sessionId: string) => {
+        socket.on("join-session", async (sessionId: unknown) => {
             try {
-                if (!sessionId || typeof sessionId !== "string") {
+                if (!isValidSessionId(sessionId)) {
                     socket.emit("error", { message: "Invalid sessionId" });
                     return;
                 }
@@ -124,28 +150,65 @@ export function setupSocket(io: Server) {
                     return;
                 }
 
-                const canAccess = await canAccessSession(
-                    socket.data.user.id,
-                    socket.data.user.role,
-                    sessionId
-                );
+                // Re-read the principal at the sensitive boundary. JWT role claims
+                // may be stale after a role downgrade, suspension, or revocation.
+                const currentUser = await prisma.user.findUnique({
+                    where: { id: socket.data.user.id },
+                    select: { id: true, role: true, emailVerified: true }
+                });
+                if (!currentUser || !currentUser.emailVerified) {
+                    socket.emit("error", { message: "Unauthorized" });
+                    return;
+                }
+                socket.data.user.role = currentUser.role;
 
-                if (!canAccess) {
-                    logger.warn("Socket", `Forbidden join-session attempt: User ${socket.data.user.id} tried to join session '${sessionId}'`);
+                const session = await prisma.session.findFirst({
+                    where: {
+                        OR: [
+                            { id: sessionId },
+                            { sessionId }
+                        ]
+                    },
+                    select: { sessionId: true, userId: true }
+                });
+
+                if (!session) {
                     socket.emit("error", { message: "Forbidden - Cannot access this session" });
                     return;
                 }
 
-                socket.join(sessionId);
-                logger.debug("Socket", `Socket ${socket.id} (User: ${socket.data.user.id}) joined session room: ${sessionId}`);
+                const canAccess = await canAccessSession(
+                    currentUser.id,
+                    currentUser.role,
+                    session.sessionId
+                );
+
+                if (!canAccess) {
+                    logger.warn("Socket", `Forbidden join-session attempt: User ${currentUser.id} tried to join session '${sessionId}'`);
+                    socket.emit("error", { message: "Forbidden - Cannot access this session" });
+                    return;
+                }
+
+                socket.join(getSessionPublicRoom(session.sessionId));
+
+                // The public room is state-only. QR and pairing data belong to
+                // a private room that only the owner or an active SUPERADMIN
+                // may join.
+                if (mayReceivePrivateSessionEvent(currentUser, session.userId)) {
+                    socket.join(getSessionPrivateRoom(session.sessionId));
+                    logger.debug("Socket", `Socket ${socket.id} (User: ${socket.data.user.id}) joined public/private session rooms for: ${session.sessionId}`);
+                } else {
+                    logger.debug("Socket", `Socket ${socket.id} (User: ${socket.data.user.id}) joined public-only session room for: ${session.sessionId}`);
+                }
             } catch (err) {
-                logger.error("Socket", `Error joining session ${sessionId}:`, err);
+                logger.error("Socket", `Error joining session ${String(sessionId)}:`, err);
                 socket.emit("error", { message: "Error joining session room" });
             }
         });
 
         // 🛡️ Authorized User-specific Notification Room Join
-        socket.on("join-user-room", (userId: string) => {
+        socket.on("join-user-room", async (userId: unknown) => {
+            try {
             if (!userId || typeof userId !== "string") {
                 socket.emit("error", { message: "Invalid userId" });
                 return;
@@ -156,8 +219,18 @@ export function setupSocket(io: Server) {
                 return;
             }
 
+            const currentUser = await prisma.user.findUnique({
+                where: { id: socket.data.user.id },
+                select: { id: true, role: true, emailVerified: true }
+            });
+            if (!currentUser || !currentUser.emailVerified) {
+                socket.emit("error", { message: "Unauthorized" });
+                return;
+            }
+            socket.data.user.role = currentUser.role;
+
             // Only allow joining own user room, unless SUPERADMIN
-            if (socket.data.user.id !== userId && socket.data.user.role !== "SUPERADMIN") {
+            if (currentUser.id !== userId && currentUser.role !== "SUPERADMIN") {
                 logger.warn("Socket", `Forbidden join-user-room attempt: User ${socket.data.user.id} tried to join user:${userId}`);
                 socket.emit("error", { message: "Forbidden - Cannot access other user room" });
                 return;
@@ -165,6 +238,10 @@ export function setupSocket(io: Server) {
 
             socket.join(`user:${userId}`);
             logger.debug("Socket", `Socket ${socket.id} joined user room: user:${userId}`);
+            } catch (err) {
+                logger.error("Socket", "Error joining user room:", err);
+                socket.emit("error", { message: "Error joining user room" });
+            }
         });
     });
 }

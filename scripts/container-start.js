@@ -22,7 +22,7 @@ function buildDatabaseUrl(env = process.env) {
 function commandFor(mode, env = process.env) {
     if (mode === "app") {
         const executable = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
-        return [executable, [executable, "src/server/index.ts"]];
+        return [executable, [executable, "scripts/start-production.mjs"]];
     } else if (mode === "migrate") {
         const executable = path.join(root, "node_modules", "prisma", "build", "index.js");
         return [executable, [executable, "migrate", "deploy"]];

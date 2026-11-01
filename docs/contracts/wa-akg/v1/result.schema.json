@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/wa-akg/result/v1.json",
+  "title": "WA-AKG processing result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "eventId",
+    "jobId",
+    "correlationId",
+    "processorVersion",
+    "status",
+    "evidence",
+    "confidence",
+    "sourceReferences",
+    "artifacts",
+    "accessScope"
+  ],
+  "properties": {
+    "contractVersion": { "const": "wa-akg.result.v1" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "jobId": { "type": "string", "minLength": 1 },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "processorVersion": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["completed", "partial", "failed", "blocked"] },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reference", "status"],
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "reference": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["observed", "declared", "inferred", "unknown"] }
+        }
+      }
+    },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "sourceReferences": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "reference"],
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "reference": { "type": "string", "minLength": 1 },
+          "mimeType": { "type": "string" },
+          "text": { "type": "string" },
+          "language": { "type": ["string", "null"] },
+          "segments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["start", "end", "text"],
+              "properties": {
+                "start": { "type": "number", "minimum": 0 },
+                "end": { "type": "number", "minimum": 0 },
+                "text": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "accessScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subjectId", "sessionIds"],
+      "properties": {
+        "subjectId": { "type": "string", "minLength": 1 },
+        "sessionIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "failureReason": { "type": ["string", "null"] }
+  }
+}

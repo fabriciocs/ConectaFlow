@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
+import { sanitizeOAuthReadSession } from "@/lib/session-access";
 
 // GET: Retrieve session settings
 export async function GET(
@@ -30,7 +31,11 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
         }
 
-        return NextResponse.json({ status: true, message: "Session settings fetched successfully", data: session });
+        return NextResponse.json({
+            status: true,
+            message: "Session settings fetched successfully",
+            data: user.authMethod === "oauth" ? { config: null } : session
+        });
     } catch (e) {
         console.error("Get session settings error:", e);
         return NextResponse.json({ status: false, message: "Failed to get settings", error: "Failed to get settings" }, { status: 500 });
@@ -75,7 +80,11 @@ export async function PATCH(
             // In a real app we might update internal instance state
         }
 
-        return NextResponse.json({ status: true, message: "Session settings updated successfully", data: updated });
+        return NextResponse.json({
+            status: true,
+            message: "Session settings updated successfully",
+            data: user.authMethod === "oauth" ? sanitizeOAuthReadSession(updated) : updated,
+        }, { headers: { "Cache-Control": "no-store" } });
 
     } catch (e) {
         console.error("Update session settings error:", e);

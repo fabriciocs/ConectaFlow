@@ -2,7 +2,7 @@ import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
-import { SAFE_WEBHOOK_SELECT, sanitizeSessionWebhooks, sanitizeSharedSession } from "@/lib/session-access";
+import { SAFE_WEBHOOK_SELECT, sanitizeSessionWebhooks, sanitizeSharedSession, sanitizeOAuthReadSession } from "@/lib/session-access";
 
 export async function GET(
     request: NextRequest,
@@ -61,16 +61,20 @@ export async function GET(
             me = instance.socket.user;
         }
 
+        const safeSession = user.authMethod === "oauth"
+            ? sanitizeOAuthReadSession(session)
+            : sanitizeSessionWebhooks(isOwner ? session : sanitizeSharedSession(session));
+
         return NextResponse.json({
             status: true,
             message: "Session details retrieved successfully",
             data: {
-                ...sanitizeSessionWebhooks(isOwner ? session : sanitizeSharedSession(session)),
+                ...safeSession,
                 status: instance?.status || session.status, // Prefer live status
                 uptime,
                 me,
                 hasInstance: !!instance,
-                pairingCode: isOwner ? instance?.pairingCode || null : null
+                pairingCode: user.authMethod === "oauth" || !isOwner ? null : instance?.pairingCode || null
             }
         });
 

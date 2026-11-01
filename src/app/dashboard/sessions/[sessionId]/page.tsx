@@ -1,8 +1,8 @@
 "use client";
 import { apiUrl } from "@/lib/api-url";
 
-import { useEffect, useState, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import { useAppRouter as useRouter } from "@/components/app-base-path";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import Link from "@/components/app-link";
 import { io } from "socket.io-client";
 import { QRCodeSVG } from "qrcode.react";
 import { useTranslations } from "next-intl";
+import { formatWhatsAppPhone, normalizeWhatsAppPhone } from "@/lib/whatsapp-phone";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -52,6 +53,7 @@ export default function SessionDetailPage() {
     const t = useTranslations("sessions.detail");
     const tCommon = useTranslations("common");
     const params = useParams();
+    const searchParams = useSearchParams();
     const router = useRouter();
     const sessionId = params.sessionId as string;
 
@@ -63,6 +65,9 @@ export default function SessionDetailPage() {
     const [phoneNumber, setPhoneNumber] = useState("");
     const [pairingCode, setPairingCode] = useState<string | null>(null);
     const [isPairing, setIsPairing] = useState(false);
+    const [isStarting, setIsStarting] = useState(false);
+    const autoStartAttempted = useRef(false);
+    const onboardingStart = searchParams.get("onboarding") === "1";
 
     const fetchSession = useCallback(async () => {
         try {
@@ -115,11 +120,11 @@ export default function SessionDetailPage() {
             socketInstance.emit("join-session", sessionId);
         });
 
-        socketInstance.on("connection.update", (data: { status: string, qr: string, pairingCode?: string }) => {
+        socketInstance.on("connection.update", (data: { status: string, qr?: string | null, pairingCode?: string | null }) => {
             console.log("Socket update:", data);
             setSession(prev => prev ? { ...prev, status: data.status } : null);
-            setQrCode(data.qr || null);
-            if (data.pairingCode) setPairingCode(data.pairingCode);
+            if ("qr" in data) setQrCode(data.qr || null);
+            if ("pairingCode" in data) setPairingCode(data.pairingCode || null);
 
             // Re-fetch full details on major status change (like connection) to get 'me' info
             if (data.status === 'CONNECTED') {
@@ -143,7 +148,7 @@ export default function SessionDetailPage() {
         };
     }, [sessionId, fetchSession, fetchMetrics]);
 
-    const performAction = async (action: "start" | "restart" | "stop" | "logout" | "pair", payload: Record<string, string> = {}) => {
+    const performAction = useCallback(async (action: "start" | "restart" | "stop" | "logout" | "pair", payload: Record<string, string> = {}) => {
         const loadingToast = toast.loading(t("performing", { action }));
         try {
             const res = await fetch(apiUrl(`/api/sessions/${sessionId}/${action}`), {
@@ -170,18 +175,31 @@ export default function SessionDetailPage() {
         } catch (error) {
             toast.error(error instanceof Error ? error.message : "Action failed");
         } finally {
+            if (action === "start" || action === "restart") setIsStarting(false);
             toast.dismiss(loadingToast);
         }
-    };
+    }, [fetchSession, sessionId, t]);
+
+    useEffect(() => {
+        if (!onboardingStart || autoStartAttempted.current || !session || session.status !== "STOPPED") return;
+        autoStartAttempted.current = true;
+        setIsStarting(true);
+        void performAction("start");
+    }, [onboardingStart, performAction, session]);
 
     const handlePairingRequest = async () => {
-        if (!phoneNumber) {
-            toast.error(t("enterPhonePrompt"));
+        const normalizedPhone = normalizeWhatsAppPhone(phoneNumber);
+        if (!normalizedPhone) {
+            toast.error(t("phoneInvalid"));
             return;
         }
         setIsPairing(true);
-        await performAction('pair', { phoneNumber });
+        await performAction('pair', { phoneNumber: normalizedPhone });
         setIsPairing(false);
+    };
+
+    const handlePhoneChange = (value: string) => {
+        setPhoneNumber(formatWhatsAppPhone(value));
     };
 
     const copyToClipboard = (text: string) => {
@@ -282,12 +300,14 @@ export default function SessionDetailPage() {
                             </div>
                         )}
 
-                        {qrCode && (
+                        {session.status !== 'CONNECTED' && (
                             <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg bg-card relative group">
-                                <div role="img" aria-label={t("scanInstructionShort")}>
-                                    <QRCodeSVG value={qrCode} size={256} />
-                                </div>
-                                <p className="mt-4 text-sm text-muted-foreground motion-safe:animate-pulse">{t("scanInstructionShort")}</p>
+                                {qrCode && <>
+                                    <div role="img" aria-label={t("scanInstructionShort")}>
+                                        <QRCodeSVG value={qrCode} size={256} />
+                                    </div>
+                                    <p className="mt-4 text-sm text-muted-foreground motion-safe:animate-pulse">{t("scanInstructionShort")}</p>
+                                </>}
 
                                 <div className="mt-6 pt-6 border-t w-full">
                                     <div className="flex flex-col items-center gap-3">
@@ -295,16 +315,22 @@ export default function SessionDetailPage() {
                                         <div className="flex flex-col w-full max-w-sm gap-2 mt-1">
                                             <div className="flex gap-2">
                                                 <Input
+                                                    type="tel"
+                                                    inputMode="tel"
+                                                    autoComplete="tel"
                                                     placeholder={t("phonePlaceholder")}
                                                     value={phoneNumber}
-                                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhoneNumber(e.target.value)}
+                                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handlePhoneChange(e.target.value)}
+                                                    aria-invalid={Boolean(phoneNumber) && !normalizeWhatsAppPhone(phoneNumber)}
                                                     className="font-mono"
                                                 />
-                                                <Button onClick={handlePairingRequest} disabled={isPairing || !phoneNumber}>
+                                                <Button onClick={handlePairingRequest} disabled={isPairing || isStarting || !session.hasInstance || !normalizeWhatsAppPhone(phoneNumber)}>
                                                     {t("linkButton")}
                                                 </Button>
                                             </div>
                                             <p className="text-[10px] text-muted-foreground text-center">{t("phoneInstruction")}</p>
+                                            {!session.hasInstance && isStarting && <p className="text-xs text-muted-foreground text-center" role="status">{t("startingSession")}</p>}
+                                            {phoneNumber && !normalizeWhatsAppPhone(phoneNumber) && <p className="text-xs text-destructive text-center" role="alert">{t("phoneInvalid")}</p>}
                                         </div>
                                         {pairingCode && (
                                             <div className="mt-4 p-4 bg-foreground rounded-lg w-full max-w-[320px] text-center border-2 border-border shadow-xl relative group/code">
@@ -354,7 +380,7 @@ export default function SessionDetailPage() {
                             variant="outline"
                             className="w-full justify-start text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
                             onClick={() => performAction('start')}
-                            disabled={session.status === 'CONNECTED' || session.status === 'SCAN_QR'}
+                            disabled={isStarting || session.status === 'CONNECTED' || session.status === 'SCAN_QR'}
                         >
                             <Play className="mr-2 h-4 w-4" /> {t("startSession")}
                         </Button>

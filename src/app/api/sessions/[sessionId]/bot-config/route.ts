@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
 import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
-import { sanitizeSharedSession } from "@/lib/session-access";
+import { sanitizeSharedSession, sanitizeReadOnlyBotConfig } from "@/lib/session-access";
 import { getBrandConfig } from "@/lib/branding-server";
 import { getDefaultBotName, resolveBotDisplayName } from "@/lib/branding";
 
@@ -63,7 +63,9 @@ export async function GET(
             alwaysOnline: false
         };
 
-        const responseConfig = isOwner
+        const responseConfig = user.authMethod === "oauth"
+            ? sanitizeReadOnlyBotConfig(botConfig)
+            : isOwner
             ? botConfig
             : sanitizeSharedSession({ botConfig }).botConfig;
         const brandedResponseConfig = responseConfig

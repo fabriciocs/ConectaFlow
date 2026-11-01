@@ -30,7 +30,7 @@ Endpoints disponíveis:
 - `GET /api/oauth/grants` e `DELETE /api/oauth/grants/{clientId}`: consultar e revogar concessões do usuário atual.
 - `GET` e `POST /api/oauth/clients`, `PATCH /api/oauth/clients/{clientId}`: administração SUPERADMIN.
 
-O login OAuth usa as contas já existentes. A tela de consentimento mostra cliente e scopes e permite limitar a concessão às sessões WhatsApp acessíveis selecionadas. Sem seleção, a API mantém as permissões existentes do usuário e a lista de `SessionAccess`; uma seleção restringe todas as chamadas do token àquelas sessões.
+O login OAuth usa as contas já existentes. A tela de consentimento mostra cliente e scopes e permite limitar a concessão às sessões WhatsApp acessíveis selecionadas. Para grants que usam sessões, é necessário selecionar explicitamente pelo menos uma sessão; cada sessão recebe `READ` por padrão ou `WRITE` quando escolhido. A lista efetiva é revalidada contra ownership e `SessionAccess` em cada chamada.
 
 ## Scopes
 
@@ -48,15 +48,14 @@ Ative o endpoint no processo WA-AKG:
 WA_AKG_MCP_ENABLED=true
 WA_AKG_MCP_HTTP_PATH=/mcp
 WA_AKG_API_BASE_URL=http://127.0.0.1:3030/api
-WA_AKG_MCP_WRITE_ALLOWLIST=
 WA_AKG_MCP_ALLOW_REMOTE_API=false
 ```
 
-O MCP usa o `Authorization: Bearer` OAuth do usuário, valida o token em cada requisição MCP e o encaminha às operações de API. Clientes devem obter o recurso em `/.well-known/oauth-protected-resource` e o Authorization Server em `/.well-known/oauth-authorization-server`. O cliente MCP faz descoberta e registro dinâmico, e a autorização exige confirmação do e-mail da conta. Cada concessão inclui todas as sessões próprias ou compartilhadas que o usuário pode acessar, a menos que ele selecione uma lista menor na tela de consentimento. O WA-AKG reavalia as permissões atuais em cada chamada, então sessões compartilhadas removidas deixam de funcionar. Conceda `mcp:write` somente quando necessário e habilite cada ferramenta de escrita por uma entrada exata `METHOD /path` em `WA_AKG_MCP_WRITE_ALLOWLIST`.
+O MCP usa o `Authorization: Bearer` OAuth do usuário, valida o token em cada requisição MCP e o encaminha às operações de API. Clientes devem obter o recurso em `/.well-known/oauth-protected-resource` e o Authorization Server em `/.well-known/oauth-authorization-server`. O cliente MCP faz descoberta e registro dinâmico, e a autorização exige confirmação do e-mail da conta. Cada grant contém uma capacidade `READ` ou `WRITE` por sessão selecionada. O WA-AKG reavalia as permissões atuais em cada chamada, então sessões compartilhadas removidas deixam de funcionar. Conceda `mcp:write` e `api:write` somente quando necessário; não existe allowlist global de escrita no fluxo OAuth.
 
 As sessões de transporte MCP vivem em memória, expiram após 30 minutos sem atividade e têm limite de 500 sessões por processo. Refresh de OAuth pode continuar a sessão quando o mesmo usuário e cliente fazem a próxima chamada. Reiniciar o servidor encerra essas sessões de transporte; o cliente MCP deve inicializar outra sessão.
 
-O modo stdio continua local. `WA_AKG_API_KEY` é usado somente por esse modo quando configurado. O API target remoto exige HTTPS e continua bloqueado por padrão; habilite `WA_AKG_MCP_ALLOW_REMOTE_API=true` apenas quando a implantação precisar disso.
+O modo stdio continua local. Na primeira configuração em **Dashboard → OAuth Access → Local MCP setup**, o WA-AKG gera uma API key exclusiva para o usuário autenticado. A chave é armazenada somente como hash, exibida uma única vez e deve ser colocada em `WA_AKG_API_KEY` no processo MCP daquele usuário; cada usuário deve usar sua própria chave. Sem `WA_AKG_MCP_CREDENTIAL_CAPABILITIES`, o stdio começa com leitura (`mcp:read`, `api:read`, `sessions:read`). Escritas continuam bloqueadas e exigem a política JSON explícita com capacidades por sessão e operações exatas; wildcards não concedem escrita. O API target remoto exige HTTPS e continua bloqueado por padrão; habilite `WA_AKG_MCP_ALLOW_REMOTE_API=true` apenas quando a implantação precisar disso.
 
 ## Verificação operacional
 

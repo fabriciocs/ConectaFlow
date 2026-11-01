@@ -41,7 +41,12 @@ model User {
   email     String   @unique
   password  String
   role      Role     @default(USER)
-  apiKey    String?  @unique // API Key for authentication
+  // Legacy plaintext API key retained temporarily for lazy migration only.
+  apiKey          String?   @unique
+  apiKeyHash      String?   @unique
+  apiKeyPrefix    String?
+  apiKeyCreatedAt DateTime?
+  apiKeyLastUsedAt DateTime?
   emailVerified Boolean @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -51,6 +56,7 @@ model User {
   notifications              Notification[]
   sessionAccesses            SessionAccess[]
   oauthClients               OAuthClient[]               @relation("OAuthClientCreator")
+  oauthGrants                OAuthGrant[]
   oauthAuthorizationRequests OAuthAuthorizationRequest[]
   oauthAuthorizationCodes    OAuthAuthorizationCode[]
   oauthAccessTokens          OAuthAccessToken[]
@@ -92,8 +98,11 @@ model Session {
   stories           Story[]
   scheduledMessages ScheduledMessage[]
   webhooks          Webhook[]
+  inboundEvents     InboundEvent[]
+  processingResults ProcessingResult[]
   botConfig         BotConfig?
   sessionAccesses   SessionAccess[]
+  oauthGrantCapabilities OAuthGrantSessionCapability[]
 }
 
 model Contact {
@@ -135,6 +144,8 @@ model Message {
   contactId String?
   contract  Contact? @relation(fields: [contactId], references: [id])
   session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  inboundEvents InboundEvent[]
+  processingResults ProcessingResult[]
 
   @@unique([sessionId, keyId])
   @@index([sessionId, remoteJid])
@@ -270,6 +281,80 @@ model WebhookLog {
 
   @@index([webhookId])
   @@index([webhookId, createdAt])
+}
+
+// Durable receipt for inbound WhatsApp events. This is intentionally separate
+// from WebhookLog: one inbound event can fan out to many webhook destinations.
+model InboundEvent {
+  id                String    @id @default(cuid()) @db.VarChar(191)
+  eventId           String    @unique @db.VarChar(191)
+  eventType         String    @db.VarChar(64)
+  sessionId         String    @db.VarChar(191)
+  originalMessageId String    @db.VarChar(191)
+  payloadHash       String    @db.Char(64)
+  payload           Json
+  status            String    @default("RECEIVED") @db.VarChar(32)
+  attempts          Int       @default(0)
+  availableAt       DateTime  @default(now())
+  claimToken        String?   @db.VarChar(191)
+  claimExpiresAt    DateTime?
+  jobId             String?   @db.VarChar(191)
+  resultId          String?   @db.VarChar(191)
+  messageId         String?   @db.VarChar(191)
+  mediaRef          String?   @db.Text
+  lastError         String?   @db.Text
+  receivedAt        DateTime  @default(now())
+  processedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  result  ProcessingResult? @relation(fields: [resultId], references: [resultId], onDelete: SetNull)
+
+  @@unique([sessionId, eventType, originalMessageId], map: "inbound_event_source_uq")
+  @@index([status, availableAt], map: "inbound_event_queue_idx")
+  @@index([sessionId, receivedAt], map: "inbound_event_session_idx")
+  @@index([jobId], map: "inbound_event_job_idx")
+  @@index([resultId], map: "inbound_event_result_idx")
+  @@index([messageId], map: "inbound_event_message_idx")
+}
+
+// Durable versioned output produced by a local or remote processing worker.
+// The sessionId relation is the database session authority; sessionPublicId
+// preserves the public WhatsApp session identifier carried by the contract.
+model ProcessingResult {
+  id              String   @id @default(cuid()) @db.VarChar(191)
+  resultId        String   @unique @db.VarChar(191)
+  contractVersion String   @db.VarChar(64)
+  eventId         String   @db.VarChar(191)
+  jobId           String   @db.VarChar(191)
+  correlationId   String   @db.VarChar(191)
+  sessionId       String   @db.VarChar(191)
+  sessionPublicId String   @db.VarChar(191)
+  messageId       String?  @db.VarChar(191)
+  modality        String   @db.VarChar(32)
+  processorVersion String  @db.VarChar(128)
+  status          String   @db.VarChar(32)
+  language        String?  @db.VarChar(32)
+  text            String?  @db.Text
+  evidence        Json
+  confidence      Float?
+  sourceReferences Json
+  artifacts       Json
+  accessScope     Json
+  failureReason   String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  session      Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  message      Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  inboundEvents InboundEvent[]
+
+  @@unique([eventId, jobId], map: "processing_result_event_job_uq")
+  @@index([sessionId, status, createdAt], map: "processing_result_session_status_idx")
+  @@index([sessionId, modality, createdAt], map: "processing_result_session_modality_idx")
+  @@index([sessionPublicId, createdAt], map: "processing_result_public_session_idx")
 }
 
 enum AccessMode {
@@ -412,6 +497,7 @@ model OAuthClient {
   authorizationCodes    OAuthAuthorizationCode[]
   accessTokens          OAuthAccessToken[]
   refreshTokens         OAuthRefreshToken[]
+  grants                OAuthGrant[]
 
   @@index([createdById])
   @@index([isActive])
@@ -430,6 +516,7 @@ model OAuthAuthorizationRequest {
   codeChallengeMethod String    @default("S256")
   resource            String?   @db.Text
   sessionScope        Json?
+  operationAllowlist  Json?
   expiresAt           DateTime
   consumedAt          DateTime?
   createdAt           DateTime  @default(now())
@@ -451,16 +538,20 @@ model OAuthAuthorizationCode {
   codeChallenge       String
   codeChallengeMethod String    @default("S256")
   resource            String?   @db.Text
+  grantId             String?
   sessionScope        Json?
+  operationAllowlist  Json?
   expiresAt           DateTime
   consumedAt          DateTime?
   createdAt           DateTime  @default(now())
 
   client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grant  OAuthGrant? @relation(fields: [grantId], references: [id], onDelete: SetNull)
 
   @@index([clientId, expiresAt])
   @@index([userId, expiresAt])
+  @@index([grantId])
 }
 
 model OAuthAccessToken {
@@ -472,7 +563,9 @@ model OAuthAccessToken {
   grantType    String
   familyId     String?
   sessionScope Json?
+  operationAllowlist Json?
   resource     String?   @db.Text
+  grantId      String?
   expiresAt    DateTime
   revokedAt    DateTime?
   createdAt    DateTime  @default(now())
@@ -480,9 +573,11 @@ model OAuthAccessToken {
 
   client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   user   User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grant  OAuthGrant? @relation(fields: [grantId], references: [id], onDelete: SetNull)
 
   @@index([clientId, expiresAt])
   @@index([userId, expiresAt])
+  @@index([grantId])
   @@index([familyId])
   @@index([revokedAt])
 }
@@ -495,7 +590,9 @@ model OAuthRefreshToken {
   scope        String
   grantType    String
   sessionScope Json?
+  operationAllowlist Json?
   resource     String?   @db.Text
+  grantId      String?
   expiresAt    DateTime
   revokedAt    DateTime?
   rotatedAt    DateTime?
@@ -505,11 +602,59 @@ model OAuthRefreshToken {
 
   client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   user   User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grant  OAuthGrant? @relation(fields: [grantId], references: [id], onDelete: SetNull)
 
   @@index([clientId, expiresAt])
   @@index([userId, expiresAt])
+  @@index([grantId])
   @@index([familyId])
   @@index([revokedAt])
+}
+
+model OAuthRateLimitBucket {
+  key       String   @id @db.VarChar(255)
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
+
+// Normalized OAuth grant and per-session capability. The legacy sessionScope
+// JSON fields remain temporarily for tokens issued before this migration.
+model OAuthGrant {
+  id        String    @id @default(cuid())
+  clientId  String
+  userId    String
+  scope     String
+  resource  String?   @db.Text
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  client              OAuthClient                    @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user                User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionCapabilities OAuthGrantSessionCapability[]
+  authorizationCodes  OAuthAuthorizationCode[]
+  accessTokens        OAuthAccessToken[]
+  refreshTokens       OAuthRefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@index([clientId, revokedAt])
+}
+
+model OAuthGrantSessionCapability {
+  id         String   @id @default(cuid())
+  grantId    String
+  sessionId  String
+  capability String   @db.VarChar(16)
+  createdAt  DateTime @default(now())
+
+  grant   OAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  session Session    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([grantId, sessionId])
+  @@index([sessionId, capability])
 }
 
 model OIDCIdentity {
@@ -579,6 +724,20 @@ model WhatsAppSendThrottle {
   updatedAt      DateTime @updatedAt
 
   @@index([leaseUntil])
+}
+
+// Distributed ownership lease: at most one application replica may own a
+// live Baileys connection for a WhatsApp session at a time.
+model WhatsAppSessionLease {
+  sessionId    String   @id
+  ownerId      String
+  leaseToken   String
+  fencingToken Int      @default(0)
+  leaseUntil   DateTime
+  updatedAt    DateTime @updatedAt
+
+  @@index([leaseUntil])
+  @@index([ownerId])
 }
 
 

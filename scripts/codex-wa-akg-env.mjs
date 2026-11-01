@@ -1,4 +1,5 @@
 import path from "node:path";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import nextEnv from "@next/env";
 
@@ -12,4 +13,3 @@ const basePath = (process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/^\/+|\/+$/g,
 const port = process.env.PORT || "3030";
 process.env.WA_AKG_API_BASE_URL = `http://127.0.0.1:${port}${basePath ? `/${basePath}` : ""}/api`;
 process.env.WA_AKG_MCP_ALLOW_REMOTE_API = "false";
-process.env.WA_AKG_MCP_WRITE_ALLOWLIST = "";

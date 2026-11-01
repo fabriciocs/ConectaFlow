@@ -4,7 +4,9 @@ export function normalizeBasePath(value = "") {
   const path = String(value).trim();
   if (!path || path === "/") return "";
   if (/[?#\\]/.test(path)) throw new Error("Invalid app base path");
-  const normalized = `/${path.split("/").filter(Boolean).join("/")}`;
+  const segments = path.split("/").filter(Boolean);
+  if (segments.some((segment) => segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) throw new Error("Invalid app base path");
+  const normalized = `/${segments.join("/")}`;
   return normalized === "/" ? "" : normalized;
 }
 
@@ -85,6 +87,20 @@ export function authorizationRedirectWithIssuer(redirectUri, issuer) {
 
 export function mcpResourceUrl({ origin, basePath, endpointPath }) {
   return new URL(withBasePath(basePath, endpointPath), origin).toString();
+}
+
+/** Canonical MCP audience derived only from trusted configured issuer/origin. */
+export function canonicalMcpResource({ configuredIssuer, configuredOrigin, basePath = "", endpointPath = "/mcp" }) {
+  const issuer = oauthIssuer({ configuredIssuer, configuredOrigin, basePath });
+  const issuerUrl = new URL(issuer);
+  const origin = appOrigin({ configuredOrigin: configuredOrigin?.trim() || issuerUrl.origin });
+  const effectiveBasePath = normalizeBasePath(basePath)
+    || (new URL(origin).origin === issuerUrl.origin ? normalizeBasePath(issuerUrl.pathname) : "");
+  return mcpResourceUrl({
+    origin,
+    basePath: effectiveBasePath,
+    endpointPath,
+  });
 }
 
 export function protectedResourceMetadata({ configuredOrigin, requestOrigin, configuredIssuer, basePath, endpointPath }) {

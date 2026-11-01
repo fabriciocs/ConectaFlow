@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createClient } from "./service";
-import { checkDcrRegistrationRateLimit, trustedProxyClientIp, type DcrRateLimitResult } from "./dcr-rate-limit";
+import { checkDcrRegistrationRateLimitDistributed, trustedProxyClientIp, type DcrRateLimitResult } from "./dcr-rate-limit";
 import { formatScope, hasCompatibleScopeSet } from "./scopes";
 import { OAuthError, OAuthScope } from "./types";
 import { oauthJson } from "./http";
@@ -110,17 +110,17 @@ async function readBoundedBody(request: Request): Promise<string> {
 
 export function createDcrRegistrationHandler(dependencies: {
   persistClient?: CreateClient;
-  checkRateLimit?: (ip: string, now?: number) => DcrRateLimitResult;
+  checkRateLimit?: (ip: string, now?: number) => DcrRateLimitResult | Promise<DcrRateLimitResult>;
   getClientIp?: (request: Request) => string;
   now?: () => number;
 } = {}) {
   const persistClient = dependencies.persistClient ?? createClient;
-  const checkRateLimit = dependencies.checkRateLimit ?? checkDcrRegistrationRateLimit;
+  const checkRateLimit = dependencies.checkRateLimit ?? checkDcrRegistrationRateLimitDistributed;
   const getClientIp = dependencies.getClientIp ?? trustedProxyClientIp;
   const now = dependencies.now ?? Date.now;
 
   return async function registerOAuthClient(request: Request) {
-    const rate = checkRateLimit(getClientIp(request), now());
+    const rate = await checkRateLimit(getClientIp(request), now());
     if (!rate.allowed) {
       const response = oauthJson(
         { error: "rate_limited", error_description: "Too many OAuth client registrations" },

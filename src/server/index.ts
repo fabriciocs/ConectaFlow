@@ -7,11 +7,13 @@ import { parse } from "url";
 import next from "next";
 import { Server } from "socket.io";
 import { setupSocket } from "./socket";
+import { configureSocketIoAdapter } from "./socket-adapter";
 import { waManager } from "../modules/whatsapp/manager";
 import { startOutboundMessageWorker, stopOutboundMessageWorker } from "../modules/messaging/outbound-message.service";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { withBasePath } from "../lib/oauth/discovery.mjs";
+import { assertAuthStateEncryptionConfigured } from "../lib/crypto";
 import pkg from "../../package.json";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -50,6 +52,7 @@ const app = next({
 const handle = app.getRequestHandler();
 
 app.prepare().then(async () => {
+  assertAuthStateEncryptionConfigured();
   // Startup verifies database connectivity only. Apply versioned schema
   // migrations explicitly before starting application replicas.
   await prisma.$connect();
@@ -109,6 +112,7 @@ app.prepare().then(async () => {
     }
   });
 
+  const socketAdapter = await configureSocketIoAdapter(io);
   setupSocket(io);
   // Optional: Global instance for Baileys to emit events
   global.io = io;
@@ -120,7 +124,11 @@ app.prepare().then(async () => {
   }).catch(error => {
     logger.error("Server", "Unable to initialize outbound message worker", error);
   });
-  server.on("close", stopOutboundMessageWorker);
+  server.on("close", () => {
+    void waManager.shutdownAll();
+    stopOutboundMessageWorker();
+    void socketAdapter?.close();
+  });
 
   // Start Scheduler
   import("../modules/whatsapp/scheduler").then(m => m.startScheduler());

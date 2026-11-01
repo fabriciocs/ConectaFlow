@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { clientCredentials, errorJson, formParameters, oauthJson } from "@/lib/oauth/http";
 import { exchangeAuthorizationCode, getClient, OAuthError, rotateRefreshToken } from "@/lib/oauth";
+import { checkOAuthRateLimitDistributed, trustedProxyClientIp } from "@/lib/oauth/dcr-rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,8 @@ export async function POST(request: NextRequest) {
     const grantType = params.get("grant_type");
     if (!grantType) throw new OAuthError("grant_type is required");
     if (grantType === "client_credentials") throw new OAuthError("The client_credentials grant is not supported", "unsupported_grant_type");
+    const rate = await checkOAuthRateLimitDistributed("token", trustedProxyClientIp(request), { limit: 30, windowMs: 5 * 60 * 1000 });
+    if (!rate.allowed) throw new OAuthError("Too many token requests", "slow_down", 429);
     const credentials = clientCredentials(request, params);
     const client = await getClient(credentials.clientId);
     if (!client) throw new OAuthError("Client authentication failed", "invalid_client", 401);

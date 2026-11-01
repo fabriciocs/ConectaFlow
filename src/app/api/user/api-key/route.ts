@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
-import { generateApiKey } from "@/lib/api-auth";
+import { generateApiKey, hashApiKey } from "@/lib/api-auth";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store, max-age=0" };
 
@@ -13,10 +13,26 @@ export async function GET() {
     try {
         const user = await prisma.user.findUnique({
             where: { id: session.user.id },
-            select: { apiKey: true }
+            select: {
+                apiKey: true,
+                apiKeyPrefix: true,
+                apiKeyCreatedAt: true,
+                apiKeyLastUsedAt: true,
+            }
         });
 
-        return NextResponse.json({ status: true, message: "API key fetched", data: { apiKey: user?.apiKey || null } }, { headers: NO_STORE_HEADERS });
+        return NextResponse.json({
+            status: true,
+            message: "API key status fetched",
+            data: {
+                // Kept for response-shape compatibility; an existing key is never returned.
+                apiKey: null,
+                configured: Boolean(user?.apiKey || user?.apiKeyPrefix),
+                prefix: user?.apiKeyPrefix || null,
+                createdAt: user?.apiKeyCreatedAt || null,
+                lastUsedAt: user?.apiKeyLastUsedAt || null,
+            }
+        }, { headers: NO_STORE_HEADERS });
     } catch {
         return NextResponse.json({ status: false, message: "Failed to fetch API key", error: "Failed to fetch API key" }, { status: 500 });
     }
@@ -32,7 +48,13 @@ export async function POST() {
 
         await prisma.user.update({
             where: { id: session.user.id },
-            data: { apiKey: newApiKey }
+            data: {
+                apiKey: null,
+                apiKeyHash: hashApiKey(newApiKey),
+                apiKeyPrefix: newApiKey.slice(0, 8),
+                apiKeyCreatedAt: new Date(),
+                apiKeyLastUsedAt: null,
+            }
         });
 
         return NextResponse.json({ status: true, message: "API key generated", data: { apiKey: newApiKey } }, { headers: NO_STORE_HEADERS });
@@ -50,7 +72,13 @@ export async function DELETE() {
     try {
         await prisma.user.update({
             where: { id: session.user.id },
-            data: { apiKey: null }
+            data: {
+                apiKey: null,
+                apiKeyHash: null,
+                apiKeyPrefix: null,
+                apiKeyCreatedAt: null,
+                apiKeyLastUsedAt: null,
+            }
         });
 
         return NextResponse.json({ status: true, message: "API key revoked" });

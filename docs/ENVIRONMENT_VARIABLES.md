@@ -108,6 +108,11 @@ Rate limiting parameters and upload size thresholds.
 | `MAX_UPLOAD_SIZE_MB` | number | `50` | Maximum allowed file upload size (in MB) for media attachments. |
 | `ENABLE_RATE_LIMITING` | boolean | `true` | Protect API endpoints from brute-force/abuse via rate limits. |
 | `RATE_LIMIT_PER_MINUTE` | number | `60` | Max requests allowed per minute per IP address. |
+| `WA_AKG_AUTH_STATE_KEY` | string | — | Dedicated encryption key for Baileys AuthState; required in production and separate from `AUTH_SECRET`. |
+| `WA_AKG_TRUSTED_PROXY_HEADERS` | `false` | `false` | Set to `true` only when a private/trusted reverse proxy replaces forwarded client headers; enables per-client forwarded-IP rate-limit buckets. |
+| `SOCKET_IO_DISTRIBUTED` | boolean | `false` | Require the Socket.IO Redis adapter for multi-replica deployments. Fails startup when enabled without Redis configuration. |
+| `SOCKET_IO_REDIS_URL` | string | — | Private `redis://` or `rediss://` endpoint used for cross-replica Socket.IO broadcasts. Never log this value. |
+| `SOCKET_IO_REDIS_KEY` | string | `wa-akg:socket.io` | Bounded channel prefix shared by all replicas of the same deployment. |
 
 ---
 

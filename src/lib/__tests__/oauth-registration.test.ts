@@ -186,10 +186,16 @@ test("DCR rate limiter allows ten registrations per IP per hour and denies the n
 });
 
 test("DCR uses the originating IP in the sanitized proxy chain", () => {
-  const request = registrationRequest(validMetadata, { "x-forwarded-for": "203.0.113.7, 10.0.0.2" });
-  assert.equal(trustedProxyClientIp(request), "203.0.113.7");
-  const missing = new Request("https://wa-akg.example.test/api/oauth/register", { method: "POST" });
-  assert.equal(trustedProxyClientIp(missing), "unknown");
+  const previous = process.env.WA_AKG_TRUSTED_PROXY_HEADERS;
+  process.env.WA_AKG_TRUSTED_PROXY_HEADERS = "true";
+  try {
+    const request = registrationRequest(validMetadata, { "x-forwarded-for": "203.0.113.7, 10.0.0.2" });
+    assert.equal(trustedProxyClientIp(request), "203.0.113.7");
+    const missing = new Request("https://wa-akg.example.test/api/oauth/register", { method: "POST" });
+    assert.equal(trustedProxyClientIp(missing), "unknown");
+  } finally {
+    process.env.WA_AKG_TRUSTED_PROXY_HEADERS = previous;
+  }
 });
 
 test("a DCR client can start the existing PKCE authorization request", async () => {

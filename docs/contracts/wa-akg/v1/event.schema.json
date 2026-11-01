@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local/wa-akg/event/v1.json",
+  "title": "WA-AKG normalized event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "eventId", "correlationId", "source", "event", "sessionId", "originalMessageId", "type", "sender", "conversation", "occurredAt", "timestamp", "modality", "status", "authorization", "evidenceStatus", "data"],
+  "properties": {
+    "contractVersion": { "const": "wa-akg.event.v1" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "source": { "const": "wa-akg" },
+    "event": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "originalMessageId": { "type": "string", "minLength": 1 },
+    "type": {
+      "type": "string",
+      "enum": ["message.received", "message.sent", "message.status", "message.edited", "message.deleted", "connection.update", "group.update", "group.participant", "contact.update", "status.update", "test"]
+    },
+    "sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string" }
+      }
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["chat", "group", "status", "unknown"] }
+      }
+    },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "modality": { "type": "string", "enum": ["audio", "image", "document", "web", "video", "text"] },
+    "status": { "type": "string", "enum": ["received", "queued", "processing", "completed", "partial", "failed", "blocked", "cancelled"] },
+    "media": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mediaId", "mimeType", "reference"],
+        "properties": {
+          "mediaId": { "type": "string", "minLength": 1 },
+          "mimeType": { "type": "string", "minLength": 1 },
+          "reference": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subjectId", "sessionId", "scopes"],
+      "properties": {
+        "subjectId": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "scopes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "evidenceStatus": { "type": "string", "enum": ["observed", "declared", "inferred", "unknown"] },
+    "data": {},
+    "sourcePayload": { "type": "object" }
+  }
+}
