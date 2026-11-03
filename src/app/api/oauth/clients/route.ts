@@ -3,11 +3,13 @@ import { z } from "zod";
 import { getAuthenticatedUser } from "@/lib/api-auth";
 import { createClient, OAuthError, OAuthGrantType, OAuthScope, oauthJson, errorJson } from "@/lib/oauth";
 import { prisma } from "@/lib/prisma";
+import { isSafeDcrRedirectUri } from "@/lib/oauth/dcr-registration";
+import { hasCompatibleScopeSet } from "@/lib/oauth/scopes";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().trim().max(500).optional(),
-  redirectUris: z.array(z.string().url()).max(20).default([]),
+  redirectUris: z.array(z.string().url().refine(isSafeDcrRedirectUri, "Use HTTPS or loopback HTTP without fragments or credentials")).max(20).default([]),
   allowedScopes: z.array(z.enum(Object.values(OAuthScope) as [string, ...string[]])).min(1),
   grantTypes: z.array(z.enum(["authorization_code", "refresh_token"])).min(1),
   isConfidential: z.boolean().default(true),
@@ -33,6 +35,7 @@ export async function POST(request: NextRequest) {
   try {
     const input = schema.parse(await request.json());
     if (input.grantTypes.includes("authorization_code") && !input.redirectUris.length) throw new OAuthError("Authorization code clients need at least one redirect URI");
+    if (new Set(input.redirectUris).size !== input.redirectUris.length || !hasCompatibleScopeSet(input.allowedScopes) || new Set(input.allowedScopes).size !== input.allowedScopes.length) throw new OAuthError("Invalid redirect URI or incompatible scopes");
     const result = await createClient({ ...input, grantTypes: input.grantTypes as OAuthGrantType[], createdById: user.id });
     return oauthJson(result, 201);
   } catch (error) {

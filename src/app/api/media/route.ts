@@ -86,7 +86,8 @@ export async function GET(request: NextRequest) {
         // Build response
         const files = await Promise.all(
             ownedFiles.map(async ({ name, parsed }) => {
-                const filePath = path.join(MEDIA_DIR, name);
+                // Private media remains on disk and must not be traced into the build.
+                const filePath = path.join(/* turbopackIgnore: true */ MEDIA_DIR, name);
                 const fileStat = await stat(filePath);
                 const ext = path.extname(name).toLowerCase();
 
@@ -187,7 +188,7 @@ export async function DELETE(request: NextRequest) {
                 }
             }
 
-            const filePath = path.join(MEDIA_DIR, filename);
+            const filePath = path.join(/* turbopackIgnore: true */ MEDIA_DIR, filename);
             if (!existsSync(filePath)) {
                 errors.push(`Not found: ${filename}`);
                 failed++;

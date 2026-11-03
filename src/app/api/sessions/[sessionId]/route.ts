@@ -74,6 +74,7 @@ export async function GET(
                 uptime,
                 me,
                 hasInstance: !!instance,
+                isLiveConnected: isConnected,
                 pairingCode: user.authMethod === "oauth" || !isOwner ? null : instance?.pairingCode || null
             }
         });

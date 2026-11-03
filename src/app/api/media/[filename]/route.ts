@@ -53,10 +53,11 @@ export async function GET(
             }
         }
 
-        const filePath = path.join(MEDIA_DIR, filename);
+        // Files are private runtime data, not assets to trace into the build.
+        const filePath = path.join(/* turbopackIgnore: true */ MEDIA_DIR, filename);
 
         // Ensure resolved path is still within MEDIA_DIR
-        const resolvedPath = path.resolve(filePath);
+        const resolvedPath = path.resolve(/* turbopackIgnore: true */ filePath);
         if (!resolvedPath.startsWith(path.resolve(MEDIA_DIR))) {
             return NextResponse.json({ status: false, message: "Access denied", error: "Access denied" }, { status: 403 });
         }

@@ -185,27 +185,33 @@ export async function recordInboundEvent(input: RecordInboundEventInput): Promis
         jobId,
     };
 
-    try {
-        const event = await prisma.inboundEvent.create({ data: createData });
+    // Replayed WhatsApp events are expected. Let MySQL's unique constraints
+    // deduplicate atomically without raising/logging a Prisma P2002 per replay.
+    // A count of zero must still be verified against the source identity: an
+    // unrelated unique-key collision or an ignored insert is not a duplicate.
+    const inserted = await prisma.inboundEvent.createMany({
+        data: [createData],
+        skipDuplicates: true,
+    });
+    if (inserted.count === 1) {
+        const event = await prisma.inboundEvent.findUnique({ where: { eventId: identity.eventId } });
+        if (!event) throw new Error("New inbound event receipt could not be read back");
         return { created: true, conflict: false, event };
-    } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-
-        const existing = await prisma.inboundEvent.findFirst({
-            where: {
-                sessionId: input.sessionDbId,
-                eventType: input.event,
-                originalMessageId: identity.originalMessageId,
-            },
-        });
-
-        if (!existing) throw error;
-        return {
-            created: false,
-            conflict: existing.payloadHash !== identity.payloadHash,
-            event: existing,
-        };
     }
+
+    const existing = await prisma.inboundEvent.findFirst({
+        where: {
+            sessionId: input.sessionDbId,
+            eventType: input.event,
+            originalMessageId: identity.originalMessageId,
+        },
+    });
+    if (!existing) throw new Error("Inbound event insert skipped without an existing source receipt");
+    return {
+        created: false,
+        conflict: existing.payloadHash !== identity.payloadHash,
+        event: existing,
+    };
 }
 
 export async function markInboundEventQueued(eventId: string): Promise<void> {
