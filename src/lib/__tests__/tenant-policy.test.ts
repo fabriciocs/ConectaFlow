@@ -291,7 +291,7 @@ describe("decideTenantAccess", () => {
     );
 
     expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe("Access denied: privileged access required");
+    expect(decision.reason).toBe("Access denied: resource access denied");
   });
 
   it("denies elevated access when MFA, audit readiness, reason, or request id is incomplete", () => {
@@ -445,4 +445,68 @@ describe("canManageTenant", () => {
     expect(canManageTenant(owner, "DELETE")).toBe(true);
     expect(canManageTenant(owner, "CHANGE_OWNERSHIP")).toBe(true);
   });
+});
+
+test("privileged SUPERADMIN may audit another tenant without membership", () => {
+  const decision = decideTenantAccess({
+    actor: {
+      userId: "root",
+      tenantId: "tenant-b",
+      platformRole: "SUPERADMIN",
+      tenantRole: null,
+      membershipStatus: null,
+      authMethod: "session",
+    },
+    resource: { tenantId: "tenant-b", ownerUserId: "someone-else", visibility: "PRIVATE" },
+    action: "READ",
+    privilegedAccess: {
+      mfaVerified: true,
+      reason: "Authorized support investigation",
+      requestId: "request-123",
+      auditReady: true,
+    },
+  });
+  assert.equal(decision.allowed, true);
+});
+
+test("SUPERADMIN privileged access never transfers to OAuth bearer credentials", () => {
+  const decision = decideTenantAccess({
+    actor: {
+      userId: "root",
+      tenantId: "tenant-b",
+      platformRole: "SUPERADMIN",
+      tenantRole: null,
+      membershipStatus: null,
+      authMethod: "oauth",
+    },
+    resource: { tenantId: "tenant-b", ownerUserId: "someone-else", visibility: "PRIVATE" },
+    action: "READ",
+    credentialTenantId: "tenant-b",
+    requiredScopes: ["api:read"],
+    scopes: ["api:read"],
+    privilegedAccess: {
+      mfaVerified: true,
+      reason: "Authorized support investigation",
+      requestId: "request-123",
+      auditReady: true,
+    },
+  });
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reason, "Access denied: privileged session required");
+});
+
+test("SUPERADMIN without elevated context obeys normal resource ownership", () => {
+  const decision = decideTenantAccess({
+    actor: {
+      userId: "root",
+      tenantId: "tenant-a",
+      platformRole: "SUPERADMIN",
+      tenantRole: "MEMBER",
+      membershipStatus: "ACTIVE",
+      authMethod: "session",
+    },
+    resource: { tenantId: "tenant-a", ownerUserId: "root", visibility: "PRIVATE" },
+    action: "READ",
+  });
+  assert.equal(decision.allowed, true);
 });

@@ -233,10 +233,11 @@ export function decideTenantAccess(
     return deny("credential tenant mismatch");
   }
 
-  if (actor.membershipStatus !== "ACTIVE") {
-    return deny("active membership required");
+  // Service and bearer credentials must declare an operation-specific scope
+  // requirement; an omitted scope contract may never default to allow.
+  if (credentialRequired && (!input.requiredScopes || input.requiredScopes.length === 0)) {
+    return deny("required scope missing");
   }
-
   if (!hasRequiredScopes(input)) {
     return deny("required scope missing");
   }
@@ -246,18 +247,23 @@ export function decideTenantAccess(
     return deny("invalid authorization time");
   }
 
-  if (actor.platformRole === "SUPERADMIN") {
-    if (!input.privilegedAccess) {
-      return deny("privileged access required");
+  // Global administration is an explicit, separately audited browser-session
+  // operation. It does not require a membership in the target tenant.
+  // Bearer credentials, MCP transports and workers never enter this path.
+  if (actor.platformRole === "SUPERADMIN" && input.privilegedAccess) {
+    if (actor.authMethod !== "session") {
+      return deny("privileged session required");
     }
-
     if (!hasValidPrivilegedAccess(input.privilegedAccess)) {
       return deny("privileged access validation failed");
     }
-
-    // The tenant context and credential checks above prevent an elevated
-    // request from impersonating another tenant or crossing credentials.
     return allow();
+  }
+
+  // Even a SUPERADMIN must satisfy ordinary tenant membership and resource
+  // privacy rules when not using the explicit privileged administrative flow.
+  if (actor.membershipStatus !== "ACTIVE") {
+    return deny("active membership required");
   }
 
   // STAFF and PLATFORM_SUPPORT never enter the global/elevated path.

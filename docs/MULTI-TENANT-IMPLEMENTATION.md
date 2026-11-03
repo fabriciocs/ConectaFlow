@@ -71,3 +71,12 @@ Routes must describe authentication, scopes, 401/403/404/409 errors and tenant s
 - Schema drift: the database lacks the ProcessingResult table despite the Prisma migration status being up-to-date. Inventory status PARTIAL, with query issue P2021.
 - Do not execute additive migrations or mandatory constraints on this database until the drift is reconciled and a tested recovery path is available.
 - Evidence root: `.remote-desktop/sessions/20261103-multitenant/evidence/` (local and ignored by Git); generated reports do not contain credential values.
+
+## Integrated feature verification — 2026-11-03
+
+- **TESTED:** `prisma validate` and `prisma generate`, TypeScript `tsc --noEmit`, project ESLint, application tests (**213 passed / 0 failed**), MCP syntax check and MCP tests. Verified by local `scripts/Verify-MultiTenantLocal.ps1` execution with zero failed checks.
+- **IMPLEMENTED:** additive schema and SQL generated offline (8 new tables, 71 ALTER TABLE statements, no DROP), tenant decision policy with negative authorization tests, limited authenticated tenant-management routes and read-only historical inventory.
+- **BLOCKED:** migration application or any tenant backfill against the current MySQL database. The live schema lacks `ProcessingResult` while Prisma reports migrations up-to-date; its consistency, reliable backup and restoration must be verified before changing it.
+- **DEFERRED:** connecting the shared policy to all existing WhatsApp routes, API-key/OAuth grants, MCP session resume, WebSocket rooms, media access, webhooks and workers; global SUPERADMIN MFA + durable audit; onboarding, admin UI, tenant sharing and OpenAPI. Existing routes are **not yet protected by this new policy**.
+- **NOT VERIFIED:** live HTTP execution of the new endpoints, multi-tenant WhatsApp runtime and legacy data migration. No deployment, SQL execution or credential rotation occurred.
+- Log and results: `.remote-desktop/sessions/tenant-validation-20261103-162055/` (ignored by Git).

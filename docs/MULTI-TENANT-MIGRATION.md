@@ -21,7 +21,7 @@ All legacy tenant foreign keys are nullable by design. A null value means “leg
 Required offline command when a functioning local process runner is available:
 
 ```text
-prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --script
+prisma migrate diff --from-schema-datamodel <baseline-schema-at-8f44b31> --to-schema-datamodel prisma/schema.prisma --script
 ```
 
 Review the generated script for additive operations only, save it under a new timestamped directory in `prisma/migrations`, and run `prisma validate --schema prisma/schema.prisma` plus a SQL/diff review before any database operation. Do not use `db push`, `migrate deploy`, `migrate reset`, or a real database connection for this phase.

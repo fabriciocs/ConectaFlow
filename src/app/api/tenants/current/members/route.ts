@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   if (!isManagementRole(membership.role)) return forbiddenResponse();
 
   const members = await prisma.tenantMembership.findMany({
-    where: { tenantId, status: { in: ["ACTIVE", "INVITED"] } },
+    where: { tenantId, status: "ACTIVE" },
     select: { tenantId: true, userId: true, role: true, status: true },
     orderBy: [{ role: "asc" }, { userId: "asc" }],
   });
