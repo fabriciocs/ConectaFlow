@@ -29,7 +29,8 @@ function normalizeSlug(value: unknown): string | null {
   if (
     normalized.length === 0 ||
     normalized.length > TENANT_SLUG_MAX_LENGTH ||
-    !TENANT_SLUG_PATTERN.test(normalized)
+    !TENANT_SLUG_PATTERN.test(normalized) ||
+    /^personal-[0-9a-f]{32}$/.test(normalized)
   ) return null;
   return normalized;
 }

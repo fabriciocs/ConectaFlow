@@ -58,7 +58,7 @@ async function main() {
   const anomalies = {
     // These checks are aggregates; they never retrieve session credentials.
     authStatesWithoutSession: await countSql(
-      "SELECT COUNT(*) AS quantity FROM AuthState a LEFT JOIN Session s ON s.id = a.sessionId WHERE s.id IS NULL"
+      "SELECT COUNT(*) AS quantity FROM AuthState a LEFT JOIN Session s ON s.sessionId = a.sessionId WHERE s.id IS NULL"
     ),
     sendLeasesWithoutSession: await countSql(
       "SELECT COUNT(*) AS quantity FROM WhatsAppSessionLease l LEFT JOIN Session s ON s.sessionId = l.sessionId WHERE s.id IS NULL"
@@ -77,9 +77,9 @@ async function main() {
   const accountsWithLegacyApiKeys = await prisma.user.count({
     where: { OR: [{ apiKey: { not: null } }, { apiKeyHash: { not: null } }] },
   });
-  const sessionsWithoutOwners = await prisma.session.count({
-    where: { user: { is: null } },
-  }).catch(() => null); // MySQL referential constraints may make this impossible.
+  const sessionsWithoutOwners = await countSql(
+    "SELECT COUNT(*) AS quantity FROM Session s LEFT JOIN User u ON u.id = s.userId WHERE u.id IS NULL",
+  );
 
   const mediaPaths = [join(process.cwd(), "data", "media"), join(process.cwd(), "public", "media")];
   const media = {};

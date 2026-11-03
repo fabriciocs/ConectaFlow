@@ -36,10 +36,45 @@ Review the generated script for additive operations only, save it under a new ti
 6. Quarantine orphan or ambiguous records in an access-controlled reconciliation path. Quarantine must deny ordinary tenant enumeration and must not silently attach records to a default tenant.
 7. After all consumers enforce tenant context and the reconciliation report is complete, add stricter constraints in a later phase. This phase must not make `tenantId` non-null.
 
+## Local schema reconciliation
+
+On 2026-11-03, the configured loopback MySQL database had 6 users, 3 sessions and 11,548 messages. The journal marked `20261031000000_inbound_event_receipts` finished, but `ProcessingResult` and the result foreign key were missing. The existing `InboundEvent.resultId` column had zero non-null values. The inventory now uses the public `Session.sessionId` for `AuthState`. All 14,435 local auth-state rows matched that key.
+
+The on-disk checksums for the baseline, OAuth and worker leases, and inbound receipt migrations differ from the local journal. Preserve those files and journal rows while tracing the original applied versions. A fresh replay of the current history also fails at `20261031100000_add_inbound_event_message_id` because the preceding file already creates `messageId`. In an empty disposable database, inspect the failed step and verify all three effects before marking it applied through Prisma:
+
+- `InboundEvent.messageId` is nullable `VARCHAR(191)`.
+- `inbound_event_message_idx` indexes only `InboundEvent.messageId`.
+- `InboundEvent_messageId_fkey` references `Message.id` with `ON DELETE SET NULL ON UPDATE CASCADE`.
+
+```text
+prisma migrate resolve --applied 20261031100000_add_inbound_event_message_id --schema prisma/schema.prisma
+prisma migrate deploy --schema prisma/schema.prisma
+```
+
+For a copy of the local database, check the proposed repair first. The repair recreates the missing table from the canonical receipt DDL and checks or restores three foreign keys. If the missing table has referenced results, recover the result rows from backup before proceeding. An empty reference column alone cannot establish whether historical rows were lost.
+
+```text
+node --env-file=.env scripts/tenant-reconcile-processing-result.mjs
+node --env-file=.env scripts/tenant-reconcile-processing-result.mjs --apply=<exact-copy-database>
+```
+
+Use an isolated copy in `DATABASE_URL` for the apply command. The script requires a loopback MySQL address and the exact target database. MySQL DDL commits independently. Keep the copy quiescent, verify that backup and restore work, and re-run the read-only plan after applying the repair. Approve any application to the original database separately after investigating the checksum discrepancies and potential loss.
+
+## Legacy ownership backfill
+
+After the additive migration, the planner reports assignment counts and a fingerprint without returning user IDs or resource identifiers. For each user who predates the additive migration, the personal tenant has the same ID and slug `personal-${sha256(userId).slice(0,32)}` and an active owner membership. It rejects collisions, unexpected owners and inactive personal workspaces. Session-backed rows follow their declared internal or public session reference. Multiple references must agree before assignment.
+
+```text
+node --env-file=.env scripts/tenant-backfill.mjs
+node --env-file=.env scripts/tenant-backfill.mjs --apply=<exact-copy-database> --expect=<plan-fingerprint> --operator=<operator-id>
+```
+
+Run the apply command with writers stopped and a fresh reviewed plan. It recomputes the fingerprint in a serializable transaction and commits the eligible assignments and audit events together. The same input can be planned again to check for pending changes. Unresolved ownership, legacy shares to other users and unbound OAuth credentials remain untouched and are counted in the plan. Full quarantine depends on the runtime denying unscoped records, and legacy OAuth requires re-consent or a separately verified credential transition.
+
 ## Current limitations and security boundaries
 
 - Nullable tenant FKs are not hard isolation. Every read/write path must continue to authorize the tenant explicitly; a non-null `tenantId` alone is not an authorization decision.
 - Cross-tenant consistency between related legacy rows is not enforced while the fields remain nullable. In particular, session, message, webhook, label, OAuth, broadcast, and lease rows may require coordinated backfill.
 - SUPERADMIN global access is not granted by these models. It requires a separate privileged flow, reason, request correlation, outcome, and `AdminAccessEvent` record.
-- The schema does not perform a backfill, change existing data, or remove existing relationships.
-- No external service, real database, Docker environment, migration deployment, or runtime integration was exercised in this phase.
+- The additive schema preserves existing records and relationships. Run the backfill as a separate reviewed operation.
+- The existing database was inspected with read-only aggregate and metadata queries. Reconciliation and backfill on the existing database remain blocked pending reviewed recovery and rollout.

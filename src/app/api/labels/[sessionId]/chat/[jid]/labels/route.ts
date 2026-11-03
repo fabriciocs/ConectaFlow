@@ -21,7 +21,7 @@ export async function GET(
         }
 
         // Check if user can access this session
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
+        const canAccess = await canAccessSession(user, request, sessionId);
         if (!canAccess) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }
@@ -72,7 +72,7 @@ export async function PUT(
         }
 
         // Check if user can access this session
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
+        const canAccess = await canAccessSession(user, request, sessionId);
         if (!canAccess) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }

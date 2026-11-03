@@ -176,3 +176,19 @@
     }
   }
 }
+
+/* Respect motion preferences without suppressing meaningful status feedback. */
+@media (prefers-reduced-motion: reduce) {
+  html, body {
+    scroll-behavior: auto !important;
+  }
+
+  .animate-float,
+  .animate-pulse-glow {
+    animation: none;
+  }
+
+  .hover-lift:hover {
+    transform: none;
+  }
+}
