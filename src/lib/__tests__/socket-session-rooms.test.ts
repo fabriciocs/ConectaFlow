@@ -44,18 +44,25 @@ describe("Socket.IO session secret isolation", () => {
             { id: "admin-b", role: "SUPERADMIN", emailVerified: true },
         ];
         let ownerActive = true;
-        t.mock.method(prisma.user, "findUnique", async ({ where }: { where: { id: string } }) =>
+        const restores: Array<() => void> = [];
+        const mockDelegate = (delegate: object, method: string, replacement: unknown) => {
+            const original = Object.getOwnPropertyDescriptor(delegate, method);
+            Object.defineProperty(delegate, method, { configurable: true, value: replacement });
+            restores.push(() => original ? Object.defineProperty(delegate, method, original) : Reflect.deleteProperty(delegate, method));
+        };
+        t.after(() => { for (const restore of restores.reverse()) restore(); });
+        mockDelegate(prisma.user, "findUnique", async ({ where }: { where: { id: string } }) =>
             users.find(user => user.id === where.id) ?? null);
-        t.mock.method(prisma.tenantMembership, "findFirst", async ({ where }: { where: { userId: string; tenantId: string } }) =>
+        mockDelegate(prisma.tenantMembership, "findFirst", async ({ where }: { where: { userId: string; tenantId: string } }) =>
             (where.tenantId === "tenant-a" && (where.userId === "member-a" || (where.userId === "owner-a" && ownerActive))) ||
             (where.tenantId === "tenant-b" && where.userId === "admin-b")
                 ? { tenantId: where.tenantId, role: "OWNER", status: "ACTIVE" }
                 : null);
-        t.mock.method(prisma.session, "findFirst", async ({ where }: { where: { tenantId: string } }) =>
+        mockDelegate(prisma.session, "findFirst", async ({ where }: { where: { tenantId: string } }) =>
             where.tenantId === session.tenantId ? session : null);
-        t.mock.method(prisma.session, "findUnique", async ({ where }: { where: { tenantId: string } }) =>
+        mockDelegate(prisma.session, "findUnique", async ({ where }: { where: { tenantId: string } }) =>
             where.tenantId === session.tenantId ? session : null);
-        t.mock.method(prisma.resourceGrant, "findMany", async () => []);
+        mockDelegate(prisma.resourceGrant, "findMany", async () => []);
 
         const http = createServer();
         const io = new Server(http);
