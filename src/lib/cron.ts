@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { waManager } from "@/modules/whatsapp/manager";
 import { safeFetchBuffer } from "@/lib/security";
 import { logger } from "./logger";
-import type { PrismaClient } from "@prisma/client";
+import type { BroadcastLog, BroadcastRecipient, PrismaClient } from "@prisma/client";
 import type { Server } from "socket.io";
 import { emitSessionRoomEvent } from "@/server/socket";
 
@@ -278,7 +278,7 @@ export function createBroadcastRecipientProcessor(dependencies: BroadcastRecipie
         try {
             for (let index = 0; index < BATCH_SIZE; index++) {
                 const eligibleAt = getNow();
-                const recipientCandidate = await broadcastRecipient.findFirst({
+                const recipientCandidate: Pick<BroadcastRecipient, "id"> | null = await broadcastRecipient.findFirst({
                     where: {
                         broadcastLogId: candidate.id,
                         tenantId,
@@ -307,7 +307,7 @@ export function createBroadcastRecipientProcessor(dependencies: BroadcastRecipie
                 });
                 if (claim.count !== 1) continue;
 
-                const recipient = await broadcastRecipient.findFirst({
+                const recipient: (BroadcastRecipient & { broadcastLog: BroadcastLog }) | null = await broadcastRecipient.findFirst({
                     where: { id: recipientCandidate.id, tenantId, claimToken: token },
                     include: { broadcastLog: true }
                 });

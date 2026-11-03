@@ -224,7 +224,7 @@ export async function markInboundEventQueued(eventId: string, tenantId: string):
     });
 }
 
-export async function markInboundEventCompleted(eventId: string): Promise<void> {
+export async function markInboundEventCompleted(eventId: string, tenantId: string): Promise<void> {
     await prisma.inboundEvent.updateMany({
         where: { eventId, tenantId, status: { in: ["RECEIVED", "QUEUED", "PROCESSING"] } },
         data: { status: "COMPLETED", processedAt: new Date(), claimToken: null, claimExpiresAt: null },

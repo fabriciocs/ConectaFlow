@@ -1,5 +1,4 @@
 import { createServer } from "node:http";
-import { once } from "node:events";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { encode } from "next-auth/jwt";
@@ -70,16 +69,20 @@ describe("Socket.IO session secret isolation", () => {
         await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
         const address = http.address();
         assert.ok(address && typeof address === "object");
+        const { port } = address;
 
         async function openSocket(userId: string, tenantId: string) {
             const name = "authjs.session-token";
             const token = await encode({ token: { id: userId }, secret, salt: name });
-            const client = connect(`http://127.0.0.1:${address!.port}`, {
+            const client = connect(`http://127.0.0.1:${port}`, {
                 forceNew: true,
                 extraHeaders: { cookie: `${name}=${token}; wa-akg-tenant=${tenantId}` },
             });
             clients.push(client);
-            await once(client, "connect");
+            await new Promise<void>((resolve, reject) => {
+                client.once("connect", resolve);
+                client.once("connect_error", reject);
+            });
             return client;
         }
 
@@ -102,10 +105,10 @@ describe("Socket.IO session secret isolation", () => {
         owner.emit("join-session", session.sessionId);
         await roomJoined;
 
-        const firstEvent = once(owner, "connection.update");
+        const firstEvent = new Promise(resolve => owner.once("connection.update", resolve));
         const payload = createPrivateConnectionUpdate("SCAN_QR", "fixture-only");
         await emitSessionRoomEvent(io, session.tenantId, session.sessionId, "connection.update", payload, "private");
-        assert.deepEqual(await firstEvent, [payload]);
+        assert.deepEqual(await firstEvent, payload);
 
         ownerActive = false;
         await emitSessionRoomEvent(io, session.tenantId, session.sessionId, "connection.update", payload, "private");

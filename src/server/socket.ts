@@ -99,9 +99,9 @@ async function mayReceiveSessionEvent(
         resource: {
             tenantId: session.tenantId,
             ownerUserId: session.userId,
-            grants: grants.map(grant => ({
+            grants: grants.filter(grant => grant.principalUserId === user.id).map(grant => ({
                 ...grant,
-                userId: grant.principalUserId,
+                userId: user.id,
                 capabilities: Array.isArray(grant.capabilities)
                     ? grant.capabilities.filter((capability): capability is string => typeof capability === "string")
                     : [],
