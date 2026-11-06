@@ -1,5 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
 import { prisma } from "@/lib/prisma";
 
 // GET: Get all chats with a specific label
@@ -16,28 +17,26 @@ export async function GET(
         const { sessionId, labelId } = await params;
 
         // Check if user can access this session
-        const canAccess = await canAccessSession(user, request, sessionId);
-        if (!canAccess) {
+        const session = await getAuthorizedSession(user, request, sessionId);
+        if (!session) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }
 
+        const labelScope = { tenantId: session.tenantId, sessionId: session.sessionId };
+
         // Verify label exists
         const label = await prisma.label.findUnique({
-            where: { id: labelId }
+            where: { id: labelId, ...labelScope }
         });
 
         if (!label) {
             return NextResponse.json({ status: false, message: "Label not found", error: "Label not found" }, { status: 404 });
         }
 
-        if (label.sessionId !== sessionId) {
-            return NextResponse.json({ status: false, message: "Label does not belong to this session", error: "Label does not belong to this session" }, { status: 400 });
-        }
-
         // Get all chats with this label
         const chatLabels = await prisma.chatLabel.findMany({
             where: {
-                labelId
+                labelId, tenantId: session.tenantId, label: labelScope
             },
             include: {
                 label: true

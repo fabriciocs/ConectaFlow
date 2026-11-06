@@ -5,6 +5,7 @@ import { encode } from "next-auth/jwt";
 import { Server } from "socket.io";
 import { io as connect, type Socket } from "socket.io-client";
 import { prisma } from "@/lib/prisma";
+import { hashApiKey } from "@/lib/tenant-api-keys";
 import {
     createPrivateConnectionUpdate,
     createPublicConnectionUpdate,
@@ -28,7 +29,7 @@ describe("Socket.IO session secret isolation", () => {
             { status: "SCAN_QR", qr: "qr-secret", pairingCode: "pair-secret" });
     });
 
-    it("denies cross-tenant room joins and evicts a revoked owner before the next event", { timeout: 10000 }, async (t) => {
+    it("revalidates tenant membership and API key rotation before room delivery", { timeout: 30000 }, async (t) => {
         const previousSecret = process.env.AUTH_SECRET;
         const secret = "synthetic-socket-fixture-for-tenant-room-test";
         process.env.AUTH_SECRET = secret;
@@ -63,6 +64,21 @@ describe("Socket.IO session secret isolation", () => {
         mockDelegate(prisma.session, "findUnique", async ({ where }: { where: { tenantId: string } }) =>
             where.tenantId === session.tenantId ? session : null);
         mockDelegate(prisma.resourceGrant, "findMany", async () => []);
+        let activeKeyHash: string | null = hashApiKey("synthetic-initial-key");
+        const credential = {
+            id: "managed-credential",
+            userId: session.userId,
+            tenantId: session.tenantId,
+            scopes: ["api:read"],
+            user: { id: session.userId, email: "owner@example.invalid", name: null, emailVerified: true },
+        };
+        mockDelegate(prisma.apiCredential, "findFirst", async ({ where }: { where: { keyHash?: string; id?: string } }) => {
+            if (!activeKeyHash || (where.keyHash && where.keyHash !== activeKeyHash) ||
+                (where.id && where.id !== credential.id)) return null;
+            return { ...credential, keyHash: activeKeyHash };
+        });
+        mockDelegate(prisma.apiCredential, "updateMany", async ({ where }: { where: { keyHash: string } }) =>
+            ({ count: where.keyHash === activeKeyHash ? 1 : 0 }));
 
         const http = createServer();
         const io = new Server(http);
@@ -78,12 +94,12 @@ describe("Socket.IO session secret isolation", () => {
         assert.ok(address && typeof address === "object");
         const { port } = address;
 
-        async function openSocket(userId: string, tenantId: string) {
-            const name = "authjs.session-token";
-            const token = await encode({ token: { id: userId }, secret, salt: name });
+        async function openClient(extraHeaders: Record<string, string>) {
             const client = connect(`http://127.0.0.1:${port}`, {
                 forceNew: true,
-                extraHeaders: { cookie: `${name}=${token}; wa-akg-tenant=${tenantId}` },
+                reconnection: false,
+                transports: ["websocket"],
+                extraHeaders,
             });
             clients.push(client);
             await new Promise<void>((resolve, reject) => {
@@ -91,6 +107,12 @@ describe("Socket.IO session secret isolation", () => {
                 client.once("connect_error", reject);
             });
             return client;
+        }
+
+        async function openSocket(userId: string, tenantId: string) {
+            const name = "authjs.session-token";
+            const token = await encode({ token: { id: userId }, secret, salt: name });
+            return openClient({ cookie: `${name}=${token}; wa-akg-tenant=${tenantId}` });
         }
 
         const owner = await openSocket("owner-a", "tenant-a");
@@ -120,5 +142,42 @@ describe("Socket.IO session secret isolation", () => {
         ownerActive = false;
         await emitSessionRoomEvent(io, session.tenantId, session.sessionId, "connection.update", payload, "private");
         assert.equal((await io.in(privateRoom).fetchSockets()).length, 0);
+
+        ownerActive = true;
+        const publicRoom = getSessionPublicRoom(session.tenantId, session.sessionId);
+        const roomMemberIds = async () => (await io.in(publicRoom).fetchSockets()).map(socket => socket.id);
+        async function joinPublicRoom(client: Socket) {
+            await new Promise<void>(resolve => {
+                function onJoin(room: string, socketId: string) {
+                    if (room !== publicRoom || socketId !== client.id) return;
+                    io.of("/").adapter.off("join-room", onJoin);
+                    resolve();
+                }
+                io.of("/").adapter.on("join-room", onJoin);
+                client.emit("join-session", session.sessionId);
+            });
+        }
+        const firstKey = await openClient({ "x-api-key": "synthetic-initial-key" });
+        await joinPublicRoom(firstKey);
+        activeKeyHash = hashApiKey("synthetic-rotated-key");
+        const rotatedKey = await openClient({ "x-api-key": "synthetic-rotated-key" });
+        await joinPublicRoom(rotatedKey);
+        const publicPayload = createPublicConnectionUpdate("CONNECTED");
+        const rotatedEvent = new Promise(resolve => rotatedKey.once("connection.update", resolve));
+        await emitSessionRoomEvent(io, session.tenantId, session.sessionId, "connection.update", publicPayload);
+        assert.deepEqual(await rotatedEvent, publicPayload);
+        assert.ok(!(await roomMemberIds()).includes(firstKey.id!));
+
+        // A revocation and reprovision can both happen between two deliveries.
+        activeKeyHash = null;
+        activeKeyHash = hashApiKey("synthetic-reprovisioned-key");
+        await emitSessionRoomEvent(io, session.tenantId, session.sessionId, "connection.update", publicPayload);
+        assert.ok(!(await roomMemberIds()).includes(rotatedKey.id!));
+        const deniedJoin = new Promise(resolve => rotatedKey.once("error", resolve));
+        rotatedKey.emit("join-session", session.sessionId);
+        assert.deepEqual(await deniedJoin, { message: "Forbidden - Cannot access this session" });
+        await assert.rejects(openClient({ "x-api-key": "synthetic-rotated-key" }), /Authentication required/);
+        credential.user.emailVerified = false;
+        await assert.rejects(openClient({ "x-api-key": "synthetic-reprovisioned-key" }), /Authentication required/);
     });
 });

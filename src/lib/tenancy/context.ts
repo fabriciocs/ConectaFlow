@@ -18,7 +18,7 @@ export function readBrowserTenantSelection(request: Request): string | null {
 }
 
 export async function resolveTenantMembership(userId: string, selectedTenantId?: string | null) {
-  const where = { userId, status: "ACTIVE", tenant: { status: "ACTIVE" } } as const;
+  const where = { userId, status: "ACTIVE", revokedAt: null, tenant: { status: "ACTIVE", suspendedAt: null } } as const;
   const select = { tenantId: true, role: true, status: true } as const;
   if (selectedTenantId != null) {
     const tenantId = parseTenantIdHeader(selectedTenantId);

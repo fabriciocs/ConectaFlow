@@ -17,6 +17,7 @@ import { antispam } from "./antispam";
 import { logger } from "@/lib/logger";
 import { isInteractiveContent, handleInteractiveMessageDispatch } from "./interactive";
 import { normalizeWhatsAppPhone } from "@/lib/whatsapp-phone";
+import { activeWhatsAppSessionWhere } from "./session-membership";
 import {
     createPrivateConnectionUpdate,
     createPublicConnectionUpdate,
@@ -80,7 +81,7 @@ export class WhatsAppInstance {
 
     private async initialize(generation: number) {
         const sessionData = await prisma.session.findUnique({
-            where: { sessionId: this.sessionId, tenantId: this.tenantId, userId: this.userId, tenant: { status: "ACTIVE" } },
+            where: activeWhatsAppSessionWhere(this),
             include: { botConfig: true }
         });
         if (!sessionData) {
@@ -131,13 +132,10 @@ export class WhatsAppInstance {
                     throw new Error("WhatsApp session is no longer active");
                 }
                 const current = await prisma.session.findUnique({
-                    where: { sessionId, tenantId: this.tenantId, userId: this.userId, tenant: { status: "ACTIVE" } },
-                    select: { id: true, tenantId: true },
-                });
-                if (!current || !(await prisma.tenantMembership.findFirst({
-                    where: { tenantId: this.tenantId, userId: this.userId, status: "ACTIVE" },
+                    where: activeWhatsAppSessionWhere(this),
                     select: { id: true },
-                }))) throw new Error("WhatsApp session tenant binding is invalid");
+                });
+                if (!current) throw new Error("WhatsApp session tenant binding is invalid");
                 if (isInteractiveContent(content)) {
                     const interactiveMsg = await handleInteractiveMessageDispatch(sock, jid, content, options);
                     if (interactiveMsg) return interactiveMsg;
@@ -148,10 +146,10 @@ export class WhatsAppInstance {
         this.socket.sendMessage = sendMessage;
 
         // Bind Store for DB Sync
-        bindSessionStore(this.socket, this.sessionId, this.tenantId, this.io);
+        bindSessionStore(this.socket, this, this.io);
 
         // Bind Contact Sync
-        bindContactSync(this.socket, this.sessionId, this.tenantId);
+        bindContactSync(this.socket, this);
 
         this.socket.ev.on("creds.update", saveCreds);
 
@@ -305,12 +303,12 @@ export class WhatsAppInstance {
                 await this.emitPrivateConnectionUpdate(createPrivateConnectionUpdate("CONNECTED"));
 
                 try {
-                    await syncGroups(this.socket as WASocket, this.sessionId, this.tenantId);
+                    await syncGroups(this.socket as WASocket, this);
                 } catch (e) {
                     logger.error("Instance", "Group sync failed:", e);
                 }
 
-                bindAutoReply(this.socket as WASocket, this.sessionId, this.tenantId);
+                bindAutoReply(this.socket as WASocket, this);
 
                 await prisma.session.update({
                     where: { sessionId: this.sessionId, tenantId: this.tenantId },

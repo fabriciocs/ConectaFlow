@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import type { LookupFunction } from "node:net";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { prisma } from "@/lib/prisma";
@@ -78,6 +79,15 @@ export function isPublicCimdAddress(address: string): boolean {
     !(first === 0x3fff && second < 0x1000);
 }
 
+export function createPinnedCimdLookup(pinned: { address: string; family: number }): LookupFunction {
+  return (_hostname, options, callback) => {
+    // Modern Node requests all addresses for automatic family selection. Keep
+    // the validated address pinned, while honoring the requested DNS shape.
+    if (options.all) callback(null, [pinned]);
+    else callback(null, pinned.address, pinned.family);
+  };
+}
+
 export async function fetchCimdDocument(clientId: string): Promise<unknown> {
   const url = validateCimdUrl(clientId);
   let addresses: { address: string; family: number }[];
@@ -90,7 +100,7 @@ export async function fetchCimdDocument(clientId: string): Promise<unknown> {
   return new Promise((resolve, fail) => {
     const req = httpsRequest(url, {
       method: "GET", headers: { Accept: "application/json" }, timeout: FETCH_TIMEOUT_MS,
-      lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+      lookup: createPinnedCimdLookup(pinned),
     }, (response) => {
       if (response.statusCode !== 200) { response.destroy(); fail(new Error("HTTP status is not 200")); return; }
       const mediaType = (response.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();

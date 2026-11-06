@@ -1,14 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import type { WASocket } from "@whiskeysockets/baileys";
 import { logger } from "@/lib/logger";
+import { activeWhatsAppSessionWhere, type WhatsAppSessionBinding } from "../session-membership";
 
 /**
  * Sync contacts from WhatsApp to database.
  * Uses proper Baileys events for syncing and correct Session.id foreign key.
  */
-export function bindContactSync(sock: WASocket, sessionId: string, tenantId: string) {
+export function bindContactSync(sock: WASocket, binding: WhatsAppSessionBinding) {
+    const { sessionId, tenantId } = binding;
     const getSession = () => prisma.session.findUnique({
-        where: { sessionId, tenantId, tenant: { status: "ACTIVE" } },
+        where: activeWhatsAppSessionWhere(binding),
         select: { id: true },
     });
 

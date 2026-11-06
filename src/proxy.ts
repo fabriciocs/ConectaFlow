@@ -9,6 +9,13 @@ export async function proxy(request: NextRequest) {
     const basePath = requestBasePath(request.headers);
     const publicOrigin = requestPublicOrigin(request.headers, request.url);
 
+    // Compatibility for older OAuth clients that still open /authorize.
+    // Forward every parameter unchanged to the existing validated PKCE route.
+    if (pathname === "/authorize") {
+        const canonical = new URL(withBasePath("/api/oauth/authorize", basePath) + request.nextUrl.search, publicOrigin);
+        return NextResponse.redirect(canonical, { status: 307, headers: { "Cache-Control": "no-store" } });
+    }
+
     // Public routes that don't require authentication
     const publicRoutes = ["/auth/login", "/auth/register", "/api/auth", "/terms", "/privacy"];
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { getManagedApiKey, provisionManagedApiKey, revokeManagedApiKey } from "@/lib/tenant-api-keys";
 import { readBrowserTenantSelection, resolveTenantMembership } from "@/lib/tenancy/context";
 
@@ -9,6 +10,8 @@ async function resolveKeyOwner(request: Request) {
     const session = await auth();
     const userId = session?.user?.id;
     if (!userId) return { ok: false, status: 401, message: "Unauthorized" } as const;
+    const identity = await prisma.user.findUnique({ where: { id: userId }, select: { emailVerified: true } });
+    if (!identity?.emailVerified) return { ok: false, status: 403, message: "Email verification required" } as const;
     const membership = await resolveTenantMembership(userId, readBrowserTenantSelection(request));
     if (!membership) return { ok: false, status: 403, message: "Tenant unavailable" } as const;
     return { ok: true, userId, tenantId: membership.tenantId } as const;

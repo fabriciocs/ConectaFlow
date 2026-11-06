@@ -14,6 +14,10 @@ const nextConfig: NextConfig = {
     "pino",
     "qrcode-terminal",
   ],
+  // Exclude runtime user media from deployment file tracing.
+  outputFileTracingExcludes: {
+    "/*": ["./data/media/**/*"],
+  },
   turbopack: {
     root: path.resolve(__dirname),
   },

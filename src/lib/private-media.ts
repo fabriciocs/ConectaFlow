@@ -74,7 +74,7 @@ export function resolvePrivateMediaReference(
     const actualRoot = fs.realpathSync.native(mediaRoot);
     const actualFile = fs.realpathSync.native(lexicalPath);
     if (!withinDirectory(actualRoot, actualFile)) return { kind: "invalid" };
-    if (path.relative(path.join(actualRoot, filename), actualFile) !== "") return { kind: "invalid" };
+    if (path.relative(actualRoot, actualFile) !== filename) return { kind: "invalid" };
     if (!fs.statSync(actualFile).isFile()) return { kind: "invalid" };
     return { kind: "local", filePath: actualFile, filename };
   } catch {

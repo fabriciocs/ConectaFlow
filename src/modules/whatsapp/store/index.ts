@@ -10,18 +10,24 @@ import { resolveToPhoneJid, isLidJid, normalizeJid } from "@/lib/jid-utils";
 import { Server } from "socket.io";
 import { logger } from "@/lib/logger";
 import { emitSessionRoomEvent } from "@/server/socket";
+import { activeWhatsAppSessionWhere, type WhatsAppSessionBinding } from "../session-membership";
 
-export const bindSessionStore = (sock: WASocket, sessionId: string, tenantId: string, io: Server | null) => {
+export const bindSessionStore = (sock: WASocket, binding: WhatsAppSessionBinding, io: Server | null) => {
+    const { sessionId, tenantId } = binding;
     // Set start time for uptime command
     setSessionStartTime(sessionId);
 
     const getSession = () => prisma.session.findUnique({
-        where: { sessionId, tenantId, tenant: { status: "ACTIVE" } },
+        where: activeWhatsAppSessionWhere(binding),
         select: { id: true },
     });
 
     // Handle Messages
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
+
         // Process all message types: notify, append, and history sync
         if (type !== 'notify' && type !== 'append') {
             // For history sync, we still want to save messages
@@ -32,10 +38,6 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, tenantId: st
         if (type === 'notify' || type === 'append') {
             void emitSessionRoomEvent(io, tenantId, sessionId, 'message.upsert', { messages, type });
         }
-
-        const session = await getSession();
-        if (!session) return;
-        const dbSessionId = session.id;
 
         type SavedMessage = Awaited<ReturnType<typeof prisma.message.create>>;
         const processedMessages: SavedMessage[] = [];

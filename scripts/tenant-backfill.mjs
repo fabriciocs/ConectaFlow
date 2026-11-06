@@ -24,15 +24,13 @@ const parentTenantMatches = (alias) => `(${alias}.tenantId IS NULL OR ${alias}.t
 // filename, account role or similarity between internal and public IDs.
 const rules = [
   ["Session", "id", "LEFT JOIN User u ON u.id = r.userId", personalTenant("u")],
-  ...["Contact", "Message", "Group", "Story", "Label", "BotConfig", "AutoReply", "ScheduledMessage"]
+  ...["Contact", "Message", "Group", "Story", "BotConfig", "AutoReply", "ScheduledMessage"]
     .map((table) => [table, "id", scopedSession("s.id = r.sessionId"), sessionTenant]),
   ...["AuthState", "BroadcastLog", "WhatsAppSendThrottle", "WhatsAppSessionLease"]
     .map((table) => [
       table, table.startsWith("WhatsApp") ? "sessionId" : "id",
       scopedSession("s.sessionId = r.sessionId"), sessionTenant,
     ]),
-  ["ChatLabel", "id", "LEFT JOIN Label l ON l.id = r.labelId " + scopedSession("s.id = l.sessionId"),
-    expectedIf(parentTenantMatches("l"))],
   ["ProcessingResult", "id",
     scopedSession("s.id = r.sessionId") + " LEFT JOIN Message msg ON msg.id = r.messageId",
     expectedIf(`r.sessionPublicId = s.sessionId AND
@@ -87,6 +85,83 @@ function options() {
   return { database, fingerprint: expected.slice(9), operator: operator.slice(11) };
 }
 
+async function inspectLabels(tx, digest) {
+  const matches = (session, label) =>
+    `(BINARY ${session}.id = BINARY ${label}.sessionId
+      OR BINARY ${session}.sessionId = BINARY ${label}.sessionId)`;
+  // Old HTTP writers accepted both session identifiers. An exact match in
+  // each namespace must resolve to the same session to establish ownership.
+  const uniqueSession = `${matches("s", "r")} AND NOT EXISTS (
+    SELECT 1 FROM Session otherSession
+    WHERE BINARY otherSession.id <> BINARY s.id
+      AND (${matches("otherSession", "r")} OR BINARY otherSession.id = BINARY s.sessionId)
+  )`;
+  const labels = await tx.$queryRawUnsafe(`
+    WITH resolvedLabels AS (
+      SELECT r.id, r.name, r.sessionId AS sourceSessionId, r.tenantId AS sourceTenantId,
+        s.sessionId AS sessionPublicId, s.tenantId AS storedSessionTenantId, ${sessionTenant} AS tenantId
+      FROM Label r ${scopedSession(uniqueSession)}
+    )
+    SELECT candidate.id, candidate.sourceSessionId, candidate.sourceTenantId,
+      candidate.sessionPublicId, candidate.storedSessionTenantId, candidate.tenantId, EXISTS (
+        SELECT 1 FROM resolvedLabels other
+        WHERE other.id <> candidate.id AND other.name = candidate.name
+          AND (other.sourceSessionId = candidate.sessionPublicId OR other.sessionPublicId = candidate.sessionPublicId)
+      ) AS nameCollision
+    FROM resolvedLabels candidate ORDER BY candidate.id
+  `);
+  const safeLabels = new Map();
+  const inactiveLabels = new Map();
+  const labelRows = [];
+  let unassignedLabels = 0;
+  for (const { id, sourceSessionId, sourceTenantId, sessionPublicId, storedSessionTenantId, tenantId, nameCollision } of labels) {
+    const alreadyCanonical = sourceTenantId !== null && sourceSessionId === sessionPublicId;
+    const safe = Boolean(tenantId) && (sourceTenantId === null || sourceTenantId === tenantId)
+      && (!Number(nameCollision) || alreadyCanonical);
+    digest.update(JSON.stringify(["Label", id, sourceSessionId, sourceTenantId, sessionPublicId,
+      storedSessionTenantId, tenantId, Boolean(Number(nameCollision)), safe]));
+    if (!safe) {
+      // Inactive sessions are out of scope for new assignments. A known
+      // existing binding may still validate its already-bound children.
+      if (tenantId === null && sourceTenantId !== null && sourceTenantId === storedSessionTenantId) {
+        inactiveLabels.set(id, sourceTenantId);
+        if (!alreadyCanonical) unassignedLabels++;
+        continue;
+      }
+      if (sourceTenantId !== null) throw new Error("SCOPED_LABEL_REQUIRES_REVIEW");
+      unassignedLabels++;
+      continue;
+    }
+    safeLabels.set(id, tenantId);
+    if (!alreadyCanonical) labelRows.push({ id, tenantId, sourceTenantId, sourceSessionId, sessionPublicId });
+  }
+
+  const chatLabels = await tx.$queryRaw`
+    SELECT r.id, r.tenantId AS sourceTenantId, l.id AS labelId
+    FROM ChatLabel r LEFT JOIN Label l ON l.id = r.labelId ORDER BY r.id
+  `;
+  const chatLabelRows = [];
+  let unassignedChatLabels = 0;
+  for (const { id, sourceTenantId, labelId } of chatLabels) {
+    const tenantId = safeLabels.get(labelId) ?? null;
+    digest.update(JSON.stringify(["ChatLabel", id, sourceTenantId, labelId, tenantId]));
+    if (sourceTenantId !== null) {
+      if (sourceTenantId !== (tenantId ?? inactiveLabels.get(labelId))) {
+        throw new Error("SCOPED_CHAT_LABEL_REQUIRES_REVIEW");
+      }
+    } else if (tenantId === null) {
+      unassignedChatLabels++;
+    } else {
+      chatLabelRows.push({ id, tenantId });
+    }
+  }
+
+  return [
+    { table: "Label", rows: labelRows, unassigned: unassignedLabels },
+    { table: "ChatLabel", rows: chatLabelRows, unassigned: unassignedChatLabels },
+  ];
+}
+
 async function inspect(tx, database) {
   const [schema] = await tx.$queryRaw`
     SELECT MAX(finished_at) AS finishedAt FROM _prisma_migrations
@@ -125,6 +200,7 @@ async function inspect(tx, database) {
     digest.update(JSON.stringify([table, rows, Number(count.total)]));
     planned.push({ table, joins, expression, rows, unassigned: Number(count.total) - rows.length });
   }
+  planned.push(...await inspectLabels(tx, digest));
   const credentialCounts = {};
   for (const table of unassignedCredentials) {
     const [count] = await tx.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM ${identifier(table)} WHERE tenantId IS NULL`);
@@ -146,10 +222,26 @@ async function applyPlan(tx, plan, operator) {
   }
   for (const { table, joins, expression, rows } of plan.planned) {
     if (!rows.length) continue;
-    const changed = await tx.$executeRawUnsafe(
-      `UPDATE ${identifier(table)} r ${joins} SET r.tenantId = (${expression})
-        WHERE r.tenantId IS NULL AND (${expression}) IS NOT NULL`,
-    );
+    let changed = 0;
+    if (table === "Label") {
+      for (const { id, tenantId, sourceTenantId, sourceSessionId, sessionPublicId } of rows) {
+        changed += await tx.$executeRaw`
+          UPDATE Label SET tenantId = ${tenantId}, sessionId = ${sessionPublicId}
+          WHERE id = ${id} AND tenantId <=> ${sourceTenantId} AND BINARY sessionId = BINARY ${sourceSessionId}
+        `;
+      }
+    } else if (table === "ChatLabel") {
+      for (const { id, tenantId } of rows) {
+        changed += await tx.$executeRaw`
+          UPDATE ChatLabel SET tenantId = ${tenantId} WHERE id = ${id} AND tenantId IS NULL
+        `;
+      }
+    } else {
+      changed = await tx.$executeRawUnsafe(
+        `UPDATE ${identifier(table)} r ${joins} SET r.tenantId = (${expression})
+          WHERE r.tenantId IS NULL AND (${expression}) IS NOT NULL`,
+      );
+    }
     if (changed !== rows.length) throw new Error("PLAN_CHANGED_DURING_UPDATE");
     for (const { tenantId } of rows) {
       if (!assigned.has(tenantId)) assigned.set(tenantId, {});

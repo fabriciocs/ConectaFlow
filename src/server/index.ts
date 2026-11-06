@@ -20,6 +20,7 @@ const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
 const port = parseInt(process.env.PORT || "3030", 10);
 const basePath = "";
+const safeLocalMode = process.env.WA_AKG_SAFE_LOCAL_MODE === "true";
 
 const INSECURE_AUTH_SECRETS = [
   "change-me",
@@ -112,18 +113,22 @@ app.prepare().then(async () => {
     }
   });
 
-  const socketAdapter = await configureSocketIoAdapter(io);
+  const socketAdapter = safeLocalMode ? null : await configureSocketIoAdapter(io);
   setupSocket(io);
   // Optional: Global instance for Baileys to emit events
   global.io = io;
 
   // Initialize WhatsApp Manager
   waManager.setup(io);
+  if (safeLocalMode) {
+    logger.info("Server", "Safe local mode: automatic session restore and outbound worker disabled.");
+  } else {
   void waManager.loadSessions().then(() => {
     startOutboundMessageWorker();
   }).catch(error => {
     logger.error("Server", "Unable to initialize outbound message worker", error);
   });
+  }
   server.on("close", () => {
     void waManager.shutdownAll();
     stopOutboundMessageWorker();
@@ -131,20 +136,20 @@ app.prepare().then(async () => {
   });
 
   // Start Scheduler
-  import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
+  if (!safeLocalMode) import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
 
   // Cloudflare 520 Fix: increase keep-alive timeout so Node doesn't kill idle connections that Cloudflare expects to reuse
   // See: https://github.com/vercel/next.js/issues/48962
   server.keepAliveTimeout = 120 * 1000; // 120 seconds
   server.headersTimeout = 120 * 1000; // 120 seconds
 
-  server.listen(port, () => {
+  const onListening = () => {
     logger.banner(pkg.name.toUpperCase(), pkg.version, port);
 
     // --- WA-AKG Monitor Heartbeat ---
     // Sends a ping every 30 seconds to the monitoring server
     // Telemetry opt-out is supported via ENABLE_TELEMETRY="false" or DISABLE_TELEMETRY="true"
-    const isTelemetryEnabled = process.env.ENABLE_TELEMETRY !== "false" && process.env.DISABLE_TELEMETRY !== "true";
+    const isTelemetryEnabled = !safeLocalMode && process.env.ENABLE_TELEMETRY !== "false" && process.env.DISABLE_TELEMETRY !== "true";
 
     if (isTelemetryEnabled) {
       const MONITOR_URL = "https://api-wa-akg.aikeigroup.net/api/ping";
@@ -181,5 +186,7 @@ app.prepare().then(async () => {
       logger.info("Server", "Telemetry heartbeat is disabled via environment configuration.");
     }
     // --------------------------------
-  });
+  };
+  if (safeLocalMode) server.listen(port, "127.0.0.1", onListening);
+  else server.listen(port, onListening);
 });

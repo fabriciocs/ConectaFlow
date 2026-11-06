@@ -5,6 +5,7 @@ import type { BotConfig } from "@prisma/client";
 import { logger } from "@/lib/logger";
 import { getBrandConfig } from "@/lib/branding-server";
 import { getDefaultBotName } from "@/lib/branding";
+import { activeWhatsAppSessionWhere, type WhatsAppSessionBinding } from "../session-membership";
 
 const DEDUPE_TTL_MS = 5 * 60 * 1000;
 const processedMessages = new Map<string, number>();
@@ -86,13 +87,14 @@ function canAutoReply(config: BotConfig | null, fromMe: boolean, senderJid: stri
     return false;
 }
 
-export async function bindAutoReply(sock: WASocket, sessionId: string, tenantId: string) {
+export async function bindAutoReply(sock: WASocket, binding: WhatsAppSessionBinding) {
+    const { sessionId, tenantId } = binding;
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
         // Fetch session ID and Bot Config once per batch (optimization)
         const session = await prisma.session.findUnique({
-            where: { sessionId, tenantId, tenant: { status: "ACTIVE" } },
+            where: activeWhatsAppSessionWhere(binding),
             include: { botConfig: true }
         });
 

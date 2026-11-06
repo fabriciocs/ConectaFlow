@@ -61,6 +61,23 @@ test("denies symlinked files that escape the private media directory", (t) => {
   }
 });
 
+test("denies a symlink to another filename within the media directory", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wakg-media-alias-"));
+  const mediaRoot = path.join(root, "data", "media");
+  fs.mkdirSync(mediaRoot, { recursive: true });
+  const target = path.join(mediaRoot, "original.jpg");
+  const alias = path.join(mediaRoot, "alias.jpg");
+  fs.writeFileSync(target, "synthetic");
+  try {
+    try { fs.symlinkSync(target, alias, "file"); }
+    catch { t.skip("Host disallows creation of test symlinks"); return; }
+    assert.deepEqual(resolvePrivateMediaReference("data/media/alias.jpg", root), { kind: "invalid" });
+    assert.equal(resolvePrivateMediaReference("data/media/original.jpg", root).kind, "local");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("external references must be valid credential-free HTTP(S) URLs", () => {
   const secure = resolvePrivateMediaReference("https://cdn.example.test/media.jpg");
   assert.equal(secure.kind, "external");

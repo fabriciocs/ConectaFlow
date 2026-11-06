@@ -1,12 +1,27 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
 import { normalizeWebhookFilters } from "@/lib/webhook-filters";
 import { sanitizeWebhookUrl } from "@/lib/webhook-redaction";
 import { validateSafeUrl } from "@/lib/security";
 import { protectWebhookRequestHeaders, revealWebhookRequestHeaders } from "@/lib/webhook-headers";
 
 type StoredWebhookHeaders = string | null;
+const webhookFields = {
+    id: true, tenantId: true, userId: true, sessionId: true, name: true, url: true,
+    allowLocal: true, events: true, filters: true, isActive: true, createdAt: true, updatedAt: true,
+} as const;
+const privateResponseHeaders = { "Cache-Control": "no-store" };
+
+function serializeWebhook<T extends { url: string; requestHeaders?: StoredWebhookHeaders }>(
+    { requestHeaders, ...webhook }: T,
+    browserSession: boolean,
+) {
+    return browserSession
+        ? { ...webhook, requestHeaders: revealWebhookRequestHeaders(requestHeaders) }
+        : { ...webhook, url: sanitizeWebhookUrl(webhook.url) };
+}
 
 /**
  * The transport agent owns header parsing and validation. Keep this adapter
@@ -33,52 +48,30 @@ export async function GET(
     const { sessionId } = await params;
 
     // Verify access to session
-    const hasAccess = await canAccessSession(user, request, sessionId);
-    if (!hasAccess) {
+    const session = await getAuthorizedSession(user, request, sessionId);
+    if (!session) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
     try {
-        // Resolve session string ID to internal ID if needed, or just look up webhooks
-        // We need the internal ID to query the Webhook table
-        const session = await prisma.session.findUnique({
-            where: { sessionId: sessionId },
-            select: { id: true }
-        });
-
-        if (!session) {
-            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
-        }
-
+        const browserSession = user.authMethod === "session";
         const webhooks = await prisma.webhook.findMany({
             where: {
-                OR: [
-                    { sessionId: session.id }, // Specific to this session (anyone who created it)
-                    { sessionId: null, userId: user.id } // User's own global webhooks
-                ]
+                tenantId: session.tenantId,
+                userId: user.id,
+                OR: [{ sessionId: session.id }, { sessionId: null }],
             },
-            include: {
+            select: {
+                ...webhookFields,
+                requestHeaders: browserSession,
                 session: { select: { id: true, sessionId: true, name: true, status: true } }
             },
             orderBy: { createdAt: 'desc' }
         });
-        const isOwner = await isSessionOwner(user, request, sessionId);
-
-        const safeWebhooks = webhooks.map(webhook => {
-            const safeWebhook = { ...webhook };
-            delete (safeWebhook as { secret?: string | null }).secret;
-            if (isOwner) {
-                safeWebhook.requestHeaders = revealWebhookRequestHeaders(safeWebhook.requestHeaders);
-            }
-            if (!isOwner) {
-                safeWebhook.url = sanitizeWebhookUrl(safeWebhook.url);
-                delete (safeWebhook as { requestHeaders?: unknown }).requestHeaders;
-            }
-            return safeWebhook;
-        });
-        return NextResponse.json({ status: true, message: "Webhooks retrieved successfully", data: safeWebhooks });
-    } catch (error) {
-        console.error("Fetch webhooks error:", error);
+        const safeWebhooks = webhooks.map((webhook) => serializeWebhook(webhook, browserSession));
+        return NextResponse.json({ status: true, message: "Webhooks retrieved successfully", data: safeWebhooks }, { headers: privateResponseHeaders });
+    } catch {
+        console.error("Failed to fetch webhooks");
         return NextResponse.json({ status: false, message: "Failed to fetch webhooks", error: "Failed to fetch webhooks" }, { status: 500 });
     }
 }
@@ -94,13 +87,13 @@ export async function POST(
 
     const { sessionId } = await params;
 
-    const isOwner = await isSessionOwner(user, request, sessionId);
-    if (!isOwner) {
+    const session = await getAuthorizedSession(user, request, sessionId);
+    if (!session) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
     try {
-        const body = await request.json();
+        const body = await request.json().catch(() => null);
         if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ status: false, message: "Invalid request body" }, { status: 400 });
         const { name, url, secret, events } = body;
         const allowLocal = body.allowLocal === undefined ? false : body.allowLocal;
@@ -136,17 +129,10 @@ export async function POST(
             return NextResponse.json({ status: false, message: `Invalid webhook URL: ${urlValidation.error}`, error: urlValidation.error }, { status: 400 });
         }
 
-        const session = await prisma.session.findUnique({
-            where: { sessionId: sessionId },
-            select: { id: true }
-        });
-
-        if (!session) {
-            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
-        }
-
+        const browserSession = user.authMethod === "session";
         const webhook = await prisma.webhook.create({
             data: {
+                tenantId: session.tenantId,
                 userId: user.id,
                 name,
                 url,
@@ -157,15 +143,14 @@ export async function POST(
                 events,
                 filters: filters ?? undefined,
                 isActive: true
-            }
+            },
+            select: { ...webhookFields, requestHeaders: browserSession },
         });
 
-        const safeWebhook = { ...webhook };
-        delete (safeWebhook as { secret?: string | null }).secret;
-        safeWebhook.requestHeaders = revealWebhookRequestHeaders(webhook.requestHeaders);
-        return NextResponse.json({ status: true, message: "Webhook created successfully", data: safeWebhook });
-    } catch (error: unknown) {
-        console.error("Create webhook error detailed:", error);
-        return NextResponse.json({ status: false, message: "Failed to create webhook", error: "Failed to create webhook", details: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
+        const safeWebhook = serializeWebhook(webhook, browserSession);
+        return NextResponse.json({ status: true, message: "Webhook created successfully", data: safeWebhook }, { headers: privateResponseHeaders });
+    } catch {
+        console.error("Failed to create webhook");
+        return NextResponse.json({ status: false, message: "Failed to create webhook", error: "Failed to create webhook" }, { status: 500 });
     }
 }

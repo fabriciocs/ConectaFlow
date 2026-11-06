@@ -1,5 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
 import { prisma } from "@/lib/prisma";
 
 // GET: Get chats assigned to a specific label OR get labels for a specific chat
@@ -18,17 +19,19 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Unauthorized" }, { status: 401 });
         }
 
-        const canAccess = await canAccessSession(user, request, sessionId);
-        if (!canAccess) {
+        const session = await getAuthorizedSession(user, request, sessionId);
+        if (!session) {
             return NextResponse.json({ status: false, message: "Forbidden" }, { status: 403 });
         }
+
+        const labelScope = { tenantId: session.tenantId, sessionId: session.sessionId };
 
         // Mode: Get labels assigned to a specific chat JID
         if (jid) {
             const chatLabels = await prisma.chatLabel.findMany({
                 where: {
                     chatJid: decodeURIComponent(jid),
-                    label: { sessionId }
+                    tenantId: session.tenantId, label: labelScope
                 },
                 include: {
                     label: { select: { id: true, name: true, colorHex: true } }
@@ -49,7 +52,7 @@ export async function GET(
         // Mode: Get all chat-label assignments (batch for label dots)
         if (!labelId && !jid) {
             const chatLabels = await prisma.chatLabel.findMany({
-                where: { label: { sessionId } },
+                where: { tenantId: session.tenantId, label: labelScope },
                 include: {
                     label: { select: { colorHex: true, name: true } }
                 }
@@ -71,39 +74,31 @@ export async function GET(
 
         // Verify label belongs to session
         const label = await prisma.label.findUnique({
-            where: { id: labelId }
+            where: { id: labelId, ...labelScope }
         });
 
-        if (!label || label.sessionId !== sessionId) {
+        if (!label) {
             return NextResponse.json({ status: false, message: "Label not found" }, { status: 404 });
         }
 
-        // Resolve sessionId to dbSession id for contact lookup
-        const dbSession = await prisma.session.findUnique({
-            where: { sessionId },
-            select: { id: true }
-        });
-
         // Get all chatLabels for this label with contact info
         const chatLabels = await prisma.chatLabel.findMany({
-            where: { labelId },
+            where: { labelId, tenantId: session.tenantId, label: labelScope },
             orderBy: { createdAt: "desc" }
         });
 
         // Enrich with contact names if available
         const enriched = await Promise.all(
             chatLabels.map(async (cl) => {
-                let contactName: string | undefined;
-                if (dbSession) {
-                    const contact = await prisma.contact.findFirst({
-                        where: {
-                            sessionId: dbSession.id,
-                            jid: cl.chatJid
-                        },
-                        select: { name: true, notify: true }
-                    });
-                    contactName = contact?.name || contact?.notify || undefined;
-                }
+                const contact = await prisma.contact.findFirst({
+                    where: {
+                        sessionId: session.id,
+                        tenantId: session.tenantId,
+                        jid: cl.chatJid
+                    },
+                    select: { name: true, notify: true }
+                });
+                const contactName = contact?.name || contact?.notify || undefined;
                 return {
                     id: cl.id,
                     chatJid: cl.chatJid,

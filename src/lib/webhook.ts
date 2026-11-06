@@ -600,7 +600,9 @@ export async function downloadAndSaveMedia(message: WAMessage, sessionId: string
         const filename = `${safeSessionId}-${safeMessageId}.${ext}`;
 
         const mediaDir = path.resolve(process.cwd(), "data", "media");
-        const filePath = path.resolve(mediaDir, filename);
+        // This path is for runtime media storage, never a build-time dependency.
+        // Do not trace private user media into Turbopack server artifacts.
+        const filePath = path.resolve(/* turbopackIgnore: true */ mediaDir, filename);
 
         // Security check: Ensure resolved path strictly stays within data/media
         if (!filePath.startsWith(mediaDir + path.sep)) {
@@ -716,7 +718,7 @@ export async function onMessageReceived(
     }
 
     const normalized = extractMessageContent(message.message);
-    const quoted = await extractQuotedMessageAsync(message, sessionId);
+    const quoted = await extractQuotedMessageAsync(message, sessionId, tenantId);
 
     await dispatchWebhook(sessionId, tenantId, "message.received", {
         key: {
@@ -758,7 +760,7 @@ export async function onMessageSent(
 ) {
     if (!tenantId) return;
     const normalized = extractMessageContent(message.message);
-    const quoted = await extractQuotedMessageAsync(message, sessionId);
+    const quoted = await extractQuotedMessageAsync(message, sessionId, tenantId);
     const remoteJid = message.key?.remoteJid || "";
     const isGroup = remoteJid.endsWith("@g.us");
     const remoteJidAlt = message.key?.remoteJidAlt || null;
@@ -943,7 +945,7 @@ function extractMessageContent(message: WebhookMessageInput["message"]): { type:
 /**
  * Extract Quoted Message recursively (Async to Lookup DB)
  */
-async function extractQuotedMessageAsync(msg: WebhookMessageInput, sessionId: string): Promise<QuotedWebhookMessage | null> {
+async function extractQuotedMessageAsync(msg: WebhookMessageInput, sessionId: string, tenantId: string): Promise<QuotedWebhookMessage | null> {
     const messageContent = normalizedWebhookContent(msg.message);
     if (!messageContent) return null;
 
@@ -987,31 +989,15 @@ async function extractQuotedMessageAsync(msg: WebhookMessageInput, sessionId: st
         const stanzaId = readString(contextInfo.stanzaId);
         if (stanzaId) {
             try {
-                // We need the dbSessionId... this is tricky without fetching session again.
-                // But we can try to look up by sessionId (baileys ID) and keyId
-                // Message table has @@unique([sessionId, keyId]). BUT sessionId there is the CUID, not the string.
-
-                // Fetch CUID First
-                const session = await prisma.session.findUnique({
-                    where: { sessionId },
-                    select: { id: true }
+                const savedMsg = await prisma.message.findFirst({
+                    where: {
+                        tenantId,
+                        keyId: stanzaId,
+                        session: { sessionId, tenantId, tenant: { status: "ACTIVE", suspendedAt: null } },
+                    },
+                    select: { mediaUrl: true },
                 });
-
-                if (session) {
-                    const savedMsg = await prisma.message.findUnique({
-                        where: {
-                            sessionId_keyId: {
-                                sessionId: session.id,
-                                keyId: stanzaId
-                            }
-                        },
-                        select: { mediaUrl: true }
-                    });
-
-                    if (savedMsg?.mediaUrl) {
-                        fileUrl = savedMsg.mediaUrl;
-                    }
-                }
+                fileUrl = savedMsg?.mediaUrl ?? null;
             } catch (e) {
                 logger.error("Media", "Failed to lookup quoted media url", e);
             }

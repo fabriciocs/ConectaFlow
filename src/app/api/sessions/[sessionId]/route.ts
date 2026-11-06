@@ -61,7 +61,7 @@ export async function GET(
             me = instance.socket.user;
         }
 
-        const safeSession = user.authMethod === "oauth"
+        const safeSession = user.authMethod !== "session"
             ? sanitizeOAuthReadSession(session)
             : sanitizeSessionWebhooks(isOwner ? session : sanitizeSharedSession(session));
 
@@ -75,7 +75,7 @@ export async function GET(
                 me,
                 hasInstance: !!instance,
                 isLiveConnected: isConnected,
-                pairingCode: user.authMethod === "oauth" || !isOwner ? null : instance?.pairingCode || null
+                pairingCode: user.authMethod !== "session" || !isOwner ? null : instance?.pairingCode || null
             }
         });
 

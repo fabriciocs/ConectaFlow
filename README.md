@@ -25,6 +25,7 @@ ConectaFlow comes with extensive documentation designed for both developers and 
 - **[Onboarding to functional MCP](docs/ONBOARDING-MCP.md)**: First-run wizard, OAuth client modes, transport checks, runtime validation and security gates.
 - **[Environment Variables](docs/ENVIRONMENT_VARIABLES.md)**: Configuration and security guide.
 - **[Setup and execution guide](docs/SETUP.md)**: Cross-platform wizard, migration, backups and execution modes.
+- **[Prisma Bootstrap V2](docs/PRISMA-BOOTSTRAP-V2.md)**: Safe fresh-database baseline, legacy checksum guards and validation.
 - **[Reverse proxy under `/wa-akg`](docs/REVERSE_PROXY.md)**: Required path, forwarded headers, static asset and WebSocket behavior.
 - **[Internationalization (i18n)](docs/I18N.md)**: How UI languages work and how to add or translate one.
 

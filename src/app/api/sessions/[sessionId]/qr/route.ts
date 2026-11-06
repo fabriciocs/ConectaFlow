@@ -12,21 +12,26 @@ export async function GET(
 ) {
     const { sessionId } = await params;
 
+    // QR pairing is a device-enrollment secret, never a bearer/API-key capability.
+    if (request.headers.has("authorization") || request.headers.has("x-api-key")) {
+        return NextResponse.json({ status: false, error: "Forbidden" }, { status: 403, headers: noStore });
+    }
+
     try {
         const user = await getAuthenticatedUser(request);
-        if (!user) {
-            return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401 });
+        if (!user || user.authMethod !== "session") {
+            return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401, headers: noStore });
         }
 
         // Pairing QR codes can link a new WhatsApp device and are owner-only.
         const isOwner = await isSessionOwner(user, request, sessionId);
         if (!isOwner) {
-            return NextResponse.json({ status: false, message: "Forbidden - Only the session owner can view the QR code", error: "Forbidden" }, { status: 403 });
+            return NextResponse.json({ status: false, message: "Forbidden - Only the session owner can view the QR code", error: "Forbidden" }, { status: 403, headers: noStore });
         }
 
         const instance = waManager.getInstance(sessionId);
         if (!instance) {
-            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
+            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404, headers: noStore });
         }
 
         const qr = instance.qr; // Access qr property directory
@@ -37,13 +42,13 @@ export async function GET(
                 return NextResponse.json({ 
                     error: "Already connected",
                     connected: true
-                }, { status: 400 });
+                }, { status: 400, headers: noStore });
             }
             
             return NextResponse.json({ 
                 error: "QR code not available. Session may be connecting...",
                 qr: null
-            }, { status: 404 });
+            }, { status: 404, headers: noStore });
         }
 
         // Generate base64 QR code image
@@ -57,6 +62,6 @@ export async function GET(
 
     } catch (error) {
         console.error("Get QR error:", error);
-        return NextResponse.json({ status: false, message: "Failed to get QR code", error: "Failed to get QR code" }, { status: 500 });
+        return NextResponse.json({ status: false, message: "Failed to get QR code", error: "Failed to get QR code" }, { status: 500, headers: noStore });
     }
 }

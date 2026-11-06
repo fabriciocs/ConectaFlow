@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "./prisma";
 import { OAuthScope } from "./oauth/types";
 
-export const DEFAULT_API_KEY_SCOPES = [OAuthScope.API_READ, OAuthScope.API_WRITE, OAuthScope.SESSIONS_READ];
+// Managed keys default to read-only. Write scopes require an explicit grant.
+export const DEFAULT_API_KEY_SCOPES = [OAuthScope.API_READ, OAuthScope.SESSIONS_READ];
 export const MCP_SETUP_API_KEY_SCOPES = [OAuthScope.API_READ, OAuthScope.SESSIONS_READ];
 
 export function hashApiKey(apiKey: string): string {
@@ -37,7 +38,7 @@ export async function provisionManagedApiKey(tenantId: string, userId: string, r
     const data = {
         keyHash: hashApiKey(apiKey),
         keyPrefix: apiKey.slice(0, 8),
-        scopes: rotate ? DEFAULT_API_KEY_SCOPES : MCP_SETUP_API_KEY_SCOPES,
+        scopes: MCP_SETUP_API_KEY_SCOPES,
         revokedAt: null,
         lastUsedAt: null,
         createdAt: now,
@@ -51,8 +52,20 @@ export async function provisionManagedApiKey(tenantId: string, userId: string, r
         return { configured: true, created: true, apiKey, prefix: data.keyPrefix, createdAt: now };
     }
 
+    if (rotate) {
+        // Rotate the secret atomically without modifying an active key's approved scopes.
+        const rotated = await prisma.apiCredential.updateMany({
+            where: { id, tenantId, userId, revokedAt: null },
+            data: { keyHash: data.keyHash, keyPrefix: data.keyPrefix, createdAt: now, lastUsedAt: null },
+        });
+        if (rotated.count === 1) {
+            return { configured: true, created: true, apiKey, prefix: data.keyPrefix, createdAt: now };
+        }
+    }
+
+    // Reissuing a revoked key never restores historic elevated permissions.
     const updated = await prisma.apiCredential.updateMany({
-        where: { id, tenantId, userId, ...(rotate ? {} : { revokedAt: { not: null } }) },
+        where: { id, tenantId, userId, revokedAt: { not: null } },
         data,
     });
     if (updated.count === 1) {
@@ -86,10 +99,10 @@ export async function validateApiKeyValue(apiKey: string) {
         },
         select: {
             id: true, tenantId: true, userId: true, scopes: true,
-            user: { select: { id: true, email: true, name: true } },
+            user: { select: { id: true, email: true, name: true, emailVerified: true } },
         },
     });
-    if (!credential) return null;
+    if (!credential || !credential.user.emailVerified) return null;
 
     const membership = await prisma.tenantMembership.findFirst({
         where: { userId: credential.userId, tenantId: credential.tenantId, status: "ACTIVE", revokedAt: null },

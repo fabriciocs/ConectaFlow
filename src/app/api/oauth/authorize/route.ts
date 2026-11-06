@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     const challenge = params.get("code_challenge") ?? "";
     if (challengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) throw new OAuthError("PKCE S256 is required", "invalid_request");
     const state = params.get("state") ?? "";
-    const resource = params.get("resource") ?? undefined;
+    let resource = params.get("resource") ?? undefined;
     const scope = parseScopeString(params.get("scope") ?? "");
     const basePath = requestBasePath(request.headers);
     const requestOrigin = requestPublicOrigin(request.headers, request.url);
@@ -49,6 +49,9 @@ export async function GET(request: NextRequest) {
         basePath,
         endpointPath: process.env.WA_AKG_MCP_HTTP_PATH || "/mcp",
       });
+      // Some OAuth clients omit RFC 8707 resource. This server has one MCP
+      // audience: bind the request to it rather than issuing an unbound token.
+      resource ??= expectedResource;
       if (resource !== expectedResource) throw new OAuthError("resource must exactly match the configured MCP endpoint", "invalid_target");
     }
     const requestId = await createAuthorizationRequest({

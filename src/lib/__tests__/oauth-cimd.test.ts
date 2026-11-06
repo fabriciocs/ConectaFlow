@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  createCimdClientResolver, isCimdClientId, isPublicCimdAddress,
+  createCimdClientResolver, createPinnedCimdLookup, isCimdClientId, isPublicCimdAddress,
   validateCimdDocument, validateCimdUrl,
 } from "@/lib/oauth/cimd";
 import type { OAuthClientRecord } from "@/lib/oauth/types";
@@ -19,6 +19,24 @@ const metadata = {
   grant_types: ["authorization_code", "refresh_token"],
   response_types: ["code"],
 };
+
+test("CIMD pinned DNS lookup honors single and all-address callback shapes", () => {
+  const pinned = { address: "8.8.8.8", family: 4 };
+  const lookup = createPinnedCimdLookup(pinned);
+  let calls = 0;
+  lookup("client.example.org", { all: true }, (error, addresses) => {
+    assert.equal(error, null);
+    assert.deepEqual(addresses, [pinned]);
+    calls++;
+  });
+  lookup("client.example.org", { all: false }, (error, address, family) => {
+    assert.equal(error, null);
+    assert.equal(address, pinned.address);
+    assert.equal(family, pinned.family);
+    calls++;
+  });
+  assert.equal(calls, 2);
+});
 
 const existingClient: OAuthClientRecord = {
   id: "db-record",

@@ -21,7 +21,8 @@ export async function GET(request: NextRequest) {
             const scope = new Set(user.oauthSessionScope);
             sessions = sessions.filter((item) => scope.has(item.id));
         }
-        if (user.authMethod === "oauth") sessions = sessions.map(sanitizeOAuthReadSession);
+        // API keys are non-interactive credentials too: never expose QR or bot secrets.
+        if (user.authMethod !== "session") sessions = sessions.map(sanitizeOAuthReadSession);
         return NextResponse.json({ status: true, message: "Sessions retrieved successfully", data: sessions }, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
         console.error("Get sessions error:", error);

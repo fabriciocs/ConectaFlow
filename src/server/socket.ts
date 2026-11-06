@@ -2,6 +2,7 @@ import { Server, Socket } from "socket.io";
 import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
 import { validateApiKeyValue } from "../lib/api-auth";
+import { hashApiKey } from "../lib/tenant-api-keys";
 import { isValidSessionId } from "../lib/session-id";
 import { decideTenantAccess } from "../lib/tenant-policy";
 import { resolveTenantMembership } from "../lib/tenancy/context";
@@ -11,10 +12,14 @@ const SOCKET_READ_SCOPE = "api:read";
 
 type SocketPrincipal =
     | { userId: string; tenantId: string | null; method: "session"; expiresAt: number }
-    | { userId: string; tenantId: string; method: "apiKey"; credentialId: string };
+    | { userId: string; tenantId: string; method: "apiKey"; credentialId: string; credentialRevision: string };
 
 type SessionRoom = "public" | "private";
 type SessionBinding = { id: string; userId: string; tenantId: string | null };
+
+function socketCredentialRevision(keyHash: string): string {
+    return hashApiKey(`socket-credential:${keyHash}`);
+}
 
 export function getSessionPublicRoom(tenantId: string, sessionId: string) {
     return `tenant:${tenantId}:session:public:${sessionId}`;
@@ -75,9 +80,9 @@ async function mayReceiveSessionEvent(
                 revokedAt: null,
                 OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
             },
-            select: { scopes: true },
+            select: { scopes: true, keyHash: true },
         });
-        if (!Array.isArray(key?.scopes)) return false;
+        if (!Array.isArray(key?.scopes) || socketCredentialRevision(key.keyHash) !== principal.credentialRevision) return false;
         scopes = key.scopes.filter((scope): scope is string => typeof scope === "string");
     }
 
@@ -160,7 +165,8 @@ export function setupSocket(io: Server) {
 
             const apiKey = socketAuth?.apiKey ?? headers["x-api-key"];
             if (apiKey !== undefined) {
-                const user = typeof apiKey === "string" ? await validateApiKeyValue(apiKey) : null;
+                if (typeof apiKey !== "string") return next(new Error("Authentication required"));
+                const user = await validateApiKeyValue(apiKey);
                 if (!user?.credentialTenantId || !user.tenantCredentialId
                     || (selectedTenantId && selectedTenantId !== user.credentialTenantId)
                     || !user.tenantScopes.includes(SOCKET_READ_SCOPE)) {
@@ -170,6 +176,7 @@ export function setupSocket(io: Server) {
                     userId: user.id,
                     tenantId: user.credentialTenantId,
                     credentialId: user.tenantCredentialId,
+                    credentialRevision: socketCredentialRevision(hashApiKey(apiKey)),
                     method: "apiKey",
                 } satisfies SocketPrincipal;
                 return next();

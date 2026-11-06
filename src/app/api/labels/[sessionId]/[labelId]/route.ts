@@ -1,5 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
@@ -19,24 +20,11 @@ export async function PUT(
         const body = await request.json();
         const { name, color } = body;
 
-        // Find label and verify access
-        const label = await prisma.label.findUnique({
-            where: { id: labelId }
-        });
-
-        if (!label) {
-            return NextResponse.json({ status: false, message: "Label not found", error: "Label not found" }, { status: 404 });
+        const session = await getAuthorizedSession(user, request, sessionId);
+        if (!session) {
+            return NextResponse.json({ status: false, message: "Forbidden" }, { status: 403 });
         }
-
-        if (label.sessionId !== sessionId) {
-            return NextResponse.json({ status: false, message: "Label does not belong to this session", error: "Label does not belong to this session" }, { status: 404 });
-        }
-
-        // Check if user can access this session
-        const canAccess = await canAccessSession(user, request, label.sessionId);
-        if (!canAccess) {
-            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this label", error: "Forbidden - Cannot access this label" }, { status: 403 });
-        }
+        const labelScope = { id: labelId, tenantId: session.tenantId, sessionId: session.sessionId };
 
         // Prepare update data
         const updateData: Prisma.LabelUpdateInput = {};
@@ -56,13 +44,16 @@ export async function PUT(
         }
 
         const updatedLabel = await prisma.label.update({
-            where: { id: labelId },
+            where: labelScope,
             data: updateData
         });
 
         return NextResponse.json({ status: true, message: "Operation successful", data: updatedLabel });
 
     } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+            return NextResponse.json({ status: false, message: "Label not found" }, { status: 404 });
+        }
         console.error("Update label error:", error);
         return NextResponse.json({ status: false, message: "Failed to update label", error: "Failed to update label" }, { status: 500 });
     }
@@ -80,33 +71,28 @@ export async function DELETE(
             return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401 });
         }
 
-        // Find label and verify access
-        const label = await prisma.label.findUnique({
-            where: { id: labelId }
-        });
-
-        if (!label) {
-            return NextResponse.json({ status: false, message: "Label not found", error: "Label not found" }, { status: 404 });
+        const session = await getAuthorizedSession(user, request, sessionId);
+        if (!session) {
+            return NextResponse.json({ status: false, message: "Forbidden" }, { status: 403 });
         }
-
-        if (label.sessionId !== sessionId) {
-            return NextResponse.json({ status: false, message: "Label does not belong to this session", error: "Label does not belong to this session" }, { status: 404 });
-        }
-
-        // Check if user can access this session
-        const canAccess = await canAccessSession(user, request, label.sessionId);
-        if (!canAccess) {
-            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this label", error: "Forbidden - Cannot access this label" }, { status: 403 });
-        }
+        const labelScope = { id: labelId, tenantId: session.tenantId, sessionId: session.sessionId };
 
         // Delete label (cascade will delete chatLabels)
         await prisma.label.delete({
-            where: { id: labelId }
+            where: {
+                ...labelScope,
+                chatLabels: {
+                    none: { OR: [{ tenantId: null }, { tenantId: { not: session.tenantId } }] },
+                },
+            },
         });
 
         return NextResponse.json({ status: true, message: "Label deleted successfully" });
 
     } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+            return NextResponse.json({ status: false, message: "Label not found" }, { status: 404 });
+        }
         console.error("Delete label error:", error);
         return NextResponse.json({ status: false, message: "Failed to delete label", error: "Failed to delete label" }, { status: 500 });
     }

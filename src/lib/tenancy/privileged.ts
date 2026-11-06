@@ -12,12 +12,15 @@ type AdministrativeOperation = {
   name: string;
   action: TenantAction;
   tenantId?: string;
+  resourceType?: "User" | "SystemConfig" | "SystemMonitor";
+  resourceId?: string;
 };
 
 type AdministrativeResult = {
   status?: number;
   data: unknown;
   tenantId?: string;
+  resourceId?: string;
 };
 
 function response(data: unknown, status: number, headers?: Record<string, string>) {
@@ -38,7 +41,7 @@ function totpSecretFor(userId: string): string | null {
 export async function withPrivilegedAdministration(
   request: Request,
   operation: AdministrativeOperation,
-  perform: (tx: Prisma.TransactionClient) => Promise<AdministrativeResult>,
+  perform: (tx: Prisma.TransactionClient, actorUserId: string) => Promise<AdministrativeResult>,
 ) {
   if (request.headers.has("authorization") || request.headers.has("x-api-key")) {
     return response({ error: "browser_session_required" }, 403);
@@ -81,17 +84,19 @@ export async function withPrivilegedAdministration(
       const target = operation.tenantId ? await tx.tenant.findUnique({
         where: { id: operation.tenantId }, select: { id: true },
       }) : null;
-      if (target && !decideTenantAccess({
+      if (target && (target.id !== operation.tenantId || !decideTenantAccess({
         actor: { userId, platformRole: "SUPERADMIN", authMethod: "session", tenantId: target.id, tenantRole: null, membershipStatus: null },
         resource: { tenantId: target.id },
         action: operation.action,
         privilegedAccess: { mfaVerified: true, reason, requestId, auditReady: true },
-      }).allowed) return response({ error: "forbidden" }, 403, headers);
+      }).allowed)) return response({ error: "forbidden" }, 403, headers);
 
       const claim = await tx.adminAccessEvent.createMany({
         data: {
           id, actorUserId: userId, tenantId: target?.id, action: operation.name, reason, requestId,
-          resourceType: "Tenant", resourceId: operation.tenantId, outcome: "DENIED",
+          resourceType: operation.resourceType ?? "Tenant",
+          resourceId: operation.resourceId ?? operation.tenantId,
+          outcome: "DENIED",
         },
         skipDuplicates: true,
       });
@@ -99,11 +104,15 @@ export async function withPrivilegedAdministration(
 
       const result = operation.tenantId && !target
         ? { status: 404, data: { error: "not_found" } }
-        : await perform(tx);
+        : await perform(tx, userId);
       const status = result.status ?? 200;
       await tx.adminAccessEvent.update({
         where: { id },
-        data: { outcome: status < 400 ? "ALLOWED" : "DENIED", ...(result.tenantId ? { tenantId: result.tenantId, resourceId: result.tenantId } : {}) },
+        data: {
+          outcome: status < 400 ? "ALLOWED" : "DENIED",
+          ...(result.tenantId ? { tenantId: result.tenantId } : {}),
+          resourceId: result.resourceId ?? result.tenantId ?? operation.resourceId ?? operation.tenantId,
+        },
       });
       return response(result.data, status, headers);
     });

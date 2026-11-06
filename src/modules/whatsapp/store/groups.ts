@@ -2,12 +2,14 @@ import { prisma } from "@/lib/prisma";
 import type { WASocket } from "@whiskeysockets/baileys";
 import type { Prisma } from "@prisma/client";
 import { logger } from "@/lib/logger";
+import { activeWhatsAppSessionWhere, type WhatsAppSessionBinding } from "../session-membership";
 
-export async function syncGroups(sock: WASocket, sessionId: string, tenantId: string) {
+export async function syncGroups(sock: WASocket, binding: WhatsAppSessionBinding) {
+    const { sessionId, tenantId } = binding;
     try {
         // Verify session exists and get the actual database ID
         const session = await prisma.session.findUnique({
-            where: { sessionId, tenantId, tenant: { status: "ACTIVE" } },
+            where: activeWhatsAppSessionWhere(binding),
             select: { id: true }
         });
         

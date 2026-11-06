@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { emitSessionRoomEvent } from "@/server/socket";
 import { generateSessionId, isValidSessionId } from "@/lib/session-id";
+import { activeWhatsAppSessionWhere } from "./session-membership";
 
 const SESSION_LEASE_MS = 90_000;
 const SESSION_LEASE_RENEW_MS = 30_000;
@@ -65,10 +66,14 @@ export class WhatsAppManager {
         let started = 0;
         for (const session of sessions) {
             if (!session.tenantId) continue;
+            const binding = { ...session, tenantId: session.tenantId };
+            if (!(await prisma.session.findUnique({ where: activeWhatsAppSessionWhere(binding), select: { id: true } }))) continue;
             const existing = this.sessions.get(session.sessionId);
-            if (existing?.tenantId === session.tenantId && existing.userId === session.userId) {
-                await existing.init();
-                started++;
+            if (existing) {
+                if (existing.tenantId === session.tenantId && existing.userId === session.userId) {
+                    await existing.init();
+                    started++;
+                }
                 continue;
             }
             // Only auto-init sessions that were CONNECTED before (have auth creds)
@@ -200,16 +205,25 @@ export class WhatsAppManager {
     }
 
     private async startSessionOnce(sessionId: string) {
+        const session = await prisma.session.findUnique({
+            where: { sessionId },
+            select: { sessionId: true, tenantId: true, userId: true },
+        });
+        if (!session?.tenantId || !(await prisma.session.findUnique({
+            where: activeWhatsAppSessionWhere({ ...session, tenantId: session.tenantId }),
+            select: { id: true },
+        }))) throw new Error("Session not found");
+
         // If already running, do nothing
         const existingInstance = this.sessions.get(sessionId);
         if (existingInstance) {
+            if (existingInstance.tenantId !== session.tenantId || existingInstance.userId !== session.userId) {
+                throw new Error("WhatsApp session binding changed");
+            }
             if (existingInstance.status === "CONNECTED" || existingInstance.status === "SCAN_QR") return;
             await existingInstance.init();
             return;
         }
-
-        const session = await prisma.session.findUnique({ where: { sessionId, tenant: { status: "ACTIVE" } } });
-        if (!session?.tenantId) throw new Error("Session not found");
 
         if (!(await this.acquireSessionLease(sessionId, session.tenantId))) {
             throw new Error("WhatsApp session is active on another replica");
@@ -304,14 +318,15 @@ export class WhatsAppManager {
     }
 
     private async renewSessionLease(sessionId: string, tenantId: string, leaseToken: string) {
+        if (this.leaseTokens.get(sessionId) !== leaseToken) return;
+        const instance = this.sessions.get(sessionId);
         let renewed: { count: number };
         try {
-            const session = await prisma.session.findUnique({
-                where: { sessionId, tenantId, tenant: { status: "ACTIVE" } },
-                select: { userId: true },
-            });
-            const instance = this.sessions.get(sessionId);
-            renewed = session && session.userId === instance?.userId ? await prisma.whatsAppSessionLease.updateMany({
+            const session = instance?.tenantId === tenantId ? await prisma.session.findUnique({
+                where: activeWhatsAppSessionWhere(instance),
+                select: { id: true },
+            }) : null;
+            renewed = session ? await prisma.whatsAppSessionLease.updateMany({
                 where: {
                     sessionId,
                     tenantId,
@@ -325,13 +340,12 @@ export class WhatsAppManager {
             logger.error("Manager", `Unable to renew distributed Baileys lease for session ${sessionId}; stopping local instance.`, error);
             renewed = { count: 0 };
         }
-        if (renewed.count > 0) return;
+        if (renewed.count > 0 || this.leaseTokens.get(sessionId) !== leaseToken) return;
 
         const timer = this.leaseTimers.get(sessionId);
         if (timer) clearInterval(timer);
         this.leaseTimers.delete(sessionId);
         this.leaseTokens.delete(sessionId);
-        const instance = this.sessions.get(sessionId);
         if (instance) {
             logger.error("Manager", `Lost distributed Baileys lease for session ${sessionId}; stopping local instance.`);
             await instance.shutdown().catch((error) => logger.error("Manager", `Failed to stop session ${sessionId} after lease loss.`, error));
