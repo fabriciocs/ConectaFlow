@@ -101,6 +101,37 @@ test("Claude Web CIMD accepts extra advertised grant without enabling it", () =>
   assert.deepEqual(result.grantTypes, ["authorization_code", "refresh_token"]);
 });
 
+test("ChatGPT CIMD selects explicitly advertised public PKCE without fetching JWT keys", async () => {
+  const id = "https://chatgpt.com/oauth/client.json";
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const document = {
+    ...metadata, client_id: id, client_name: "ChatGPT", redirect_uris: [redirect],
+    token_endpoint_auth_method: "private_key_jwt",
+    token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+    token_endpoint_auth_signing_alg: "RS256",
+    jwks_uri: "https://chatgpt.com/oauth/jwks.json",
+  };
+  const resolver = createCimdClientResolver({
+    fetchDocument: async (url) => { assert.equal(url, id); return document; },
+    findClient: async () => null,
+    persist: async (input) => {
+      assert.deepEqual(input.redirectUris, [redirect]);
+      return { ...existingClient, ...input, isConfidential: false };
+    },
+  });
+  assert.equal((await resolver(id)).isConfidential, false);
+  for (const invalid of [
+    { ...document, token_endpoint_auth_methods_supported: ["private_key_jwt"] },
+    { ...document, token_endpoint_auth_methods_supported: undefined },
+    { ...document, token_endpoint_auth_methods_supported: "none" },
+    { ...document, token_endpoint_auth_methods_supported: ["none", "none"] },
+    { ...document, token_endpoint_auth_methods_supported: ["none", 1] },
+    { ...document, token_endpoint_auth_methods_supported: [] },
+    { ...document, client_secret: "not-accepted" },
+    { ...document, client_id: "https://other.example.org/client.json" },
+  ]) assert.throws(() => validateCimdDocument(id, invalid), { code: "invalid_client" });
+});
+
 test("CIMD never enables unsupported-only, duplicate or malformed grant metadata", () => {
   for (const grants of [
     ["urn:ietf:params:oauth:grant-type:jwt-bearer"],

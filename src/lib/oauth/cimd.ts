@@ -131,9 +131,23 @@ export function validateCimdDocument(clientId: string, document: unknown) {
   if (!document || typeof document !== "object" || Array.isArray(document)) return reject("Invalid CIMD document");
   const raw = document as Record<string, unknown>;
   if (raw.client_id !== clientId) return reject("CIMD client_id does not match the metadata URL");
-  if (raw.client_secret !== undefined || raw.client_secret_expires_at !== undefined ||
-      raw.jwks !== undefined || raw.jwks_uri !== undefined) {
-    return reject("CIMD shared secrets and unsupported client authentication keys are not accepted");
+  if (raw.client_secret !== undefined || raw.client_secret_expires_at !== undefined) {
+    return reject("CIMD shared secrets are not accepted");
+  }
+  const advertisedAuthMethods = raw.token_endpoint_auth_methods_supported;
+  if (advertisedAuthMethods !== undefined &&
+      (!Array.isArray(advertisedAuthMethods) || !advertisedAuthMethods.length || advertisedAuthMethods.length > 16 ||
+       advertisedAuthMethods.some((method) => typeof method !== "string" || !method.length || method.length > 64) ||
+       new Set(advertisedAuthMethods).size !== advertisedAuthMethods.length)) {
+    return reject("Invalid CIMD token endpoint authentication methods");
+  }
+  // ChatGPT publishes private_key_jwt as its primary method, but explicitly
+  // offers none too. Select the public PKCE flow only when the client permits
+  // it; public signing keys are irrelevant to that flow and are never fetched.
+  if ((raw.token_endpoint_auth_method !== undefined && raw.token_endpoint_auth_method !== "none" &&
+       !(Array.isArray(advertisedAuthMethods) && advertisedAuthMethods.includes("none"))) ||
+      (Array.isArray(advertisedAuthMethods) && !advertisedAuthMethods.includes("none"))) {
+    return reject("CIMD must support public client authentication with none");
   }
   // Published clients may advertise grants unsupported by this authorization server.
   // Claude Web advertises the JWT bearer grant alongside authorization_code; never
@@ -154,6 +168,7 @@ export function validateCimdDocument(clientId: string, document: unknown) {
   try {
     const metadata = validatePublicClientMetadata({
       ...raw,
+      token_endpoint_auth_method: "none",
       grant_types: supportedGrants,
       // CIMD clients may request supported scopes at consent time even if metadata omits scope.
       scope: raw.scope === undefined ? ALL_SCOPES.join(" ") : raw.scope,
