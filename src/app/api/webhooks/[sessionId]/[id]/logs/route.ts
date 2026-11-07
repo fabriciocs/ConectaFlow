@@ -1,6 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
+import { webhookScopedWhere } from "@/lib/webhook-access";
 import { sanitizeWebhookLog } from "@/lib/webhook-redaction";
 export async function GET(
     request: NextRequest,
@@ -16,35 +18,14 @@ export async function GET(
     const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
     const offset = Math.max(parseInt(searchParams.get("offset") || "0"), 0);
 
-    const hasAccess = await canAccessSession(user, request, sessionId);
-    if (!hasAccess) {
-        return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
-    }
-
-    // Resolve session by either CUID or WhatsApp sessionId
-    const session = await prisma.session.findFirst({
-        where: {
-            OR: [
-                { id: sessionId },
-                { sessionId: sessionId }
-            ]
-        },
-        select: { id: true }
-    });
-
+    const session = await getAuthorizedSession(user, request, sessionId);
     if (!session) {
-        return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
+        return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
     // Verify webhook access
     const webhook = await prisma.webhook.findFirst({
-        where: {
-            id,
-            OR: [
-                { sessionId: session.id },
-                { sessionId: null, userId: user.id }
-            ]
-        }
+        where: webhookScopedWhere(session, user.id, id)
     });
 
     if (!webhook) {
@@ -54,13 +35,13 @@ export async function GET(
     try {
         const [logs, total] = await Promise.all([
             prisma.webhookLog.findMany({
-                where: { webhookId: id },
+                where: { webhookId: id, tenantId: session.tenantId },
                 orderBy: { createdAt: "desc" },
                 take: limit,
                 skip: offset
             }),
             prisma.webhookLog.count({
-                where: { webhookId: id }
+                where: { webhookId: id, tenantId: session.tenantId }
             })
         ]);
 

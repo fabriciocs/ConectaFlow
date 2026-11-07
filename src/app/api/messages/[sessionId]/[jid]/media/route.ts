@@ -2,6 +2,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
 import { ChatService } from "@/modules/whatsapp/chat.service";
+import { MultipartLimitError, readBoundedMultipartForm } from "@/lib/multipart-limits";
 
 export async function POST(
     request: NextRequest,
@@ -14,20 +15,32 @@ export async function POST(
         }
 
         const { sessionId, jid } = await params;
-        const formData = await request.formData();
+        const canAccess = await canAccessSession(user, request, sessionId);
+        if (!canAccess) {
+            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session" }, { status: 403 });
+        }
+        const formData = await readBoundedMultipartForm(request, 64 * 1024 * 1024);
         const file = formData.get("file") as File;
         const type = formData.get("type") as string; // image, video, audio, document
         const caption = formData.get("caption") as string || "";
         
-        if (!file) {
-             return NextResponse.json({ status: false, message: "file is required", error: "file is required" }, { status: 400 });
+        if (!(file instanceof File) || file.size === 0) {
+            return NextResponse.json({ status: false, message: "A nonempty file is required" }, { status: 400 });
+        }
+        if (file.size > 64 * 1024 * 1024) {
+            return NextResponse.json({ status: false, message: "File too large" }, { status: 413 });
+        }
+        if (!["image", "video", "audio", "voice", "document", "sticker"].includes(type)) {
+            return NextResponse.json({ status: false, message: "Unsupported media type" }, { status: 400 });
+        }
+        if ((type === "image" || type === "sticker") && !file.type.startsWith("image/")) {
+            return NextResponse.json({ status: false, message: "Invalid image MIME type" }, { status: 400 });
+        }
+        if (typeof caption !== "string" || caption.length > 4096 || file.name.length > 255) {
+            return NextResponse.json({ status: false, message: "Invalid media metadata" }, { status: 400 });
         }
 
-        // Check if user can access this session
-        const canAccess = await canAccessSession(user, request, sessionId);
-        if (!canAccess) {
-            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
-        }
+
 
         const decodedJid = decodeURIComponent(jid);
 
@@ -59,7 +72,10 @@ export async function POST(
         return NextResponse.json({ status: true, message: "Operation successful", data: sent });
 
     } catch (e) {
-        console.error("Media send error", e);
+        if (e instanceof MultipartLimitError) {
+            return NextResponse.json({ status: false, message: e.message }, { status: e.status });
+        }
+        console.error("Media send error");
         return NextResponse.json({ status: false, message: "Failed to send media", error: "Failed to send media" }, { status: 500 });
     }
 }

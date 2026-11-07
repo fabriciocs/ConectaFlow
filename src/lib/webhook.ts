@@ -15,6 +15,7 @@ import {
 } from "./security";
 import { sanitizeWebhookLog } from "./webhook-redaction";
 import { revealWebhookRequestHeaders } from "./webhook-headers";
+import { isPrivateWebhookDestinationAllowed } from "./webhook-egress-policy";
 import { signWebhookBody } from "./webhook-signature";
 import {
     buildInboundWebhookEnvelope,
@@ -76,6 +77,7 @@ interface QuotedWebhookMessage {
 export interface WebhookRequestOptions {
     requestHeaders?: string | null;
     allowLocal?: boolean;
+    tenantId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -185,6 +187,7 @@ export async function dispatchWebhook(
             deliveries.push(sendWebhookRequest(webhook.url, payload, webhook.secret, webhook.id, {
                 requestHeaders: configuredWebhook.requestHeaders,
                 allowLocal: configuredWebhook.allowLocal === true,
+                tenantId,
             }));
         }
 
@@ -285,7 +288,7 @@ async function sendWebhookRequest(
             headers,
             body,
             allowHttp: true,
-            allowLocal: options.allowLocal === true,
+            allowLocal: options.allowLocal === true && isPrivateWebhookDestinationAllowed(url, options.tenantId),
             timeoutMs: 10000,
             maxBytes: 1024 * 1024
         });
@@ -434,7 +437,7 @@ export async function testWebhook(
             headers,
             body,
             allowHttp: true,
-            allowLocal: options.allowLocal === true,
+            allowLocal: options.allowLocal === true && isPrivateWebhookDestinationAllowed(url, options.tenantId),
             timeoutMs: 15000,
             maxBytes: 1024 * 1024
         });

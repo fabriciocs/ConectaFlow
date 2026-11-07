@@ -7,12 +7,17 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
+    const rate = await checkOAuthRateLimitDistributed("token", trustedProxyClientIp(request), { limit: 30, windowMs: 5 * 60 * 1000 });
+    if (!rate.allowed) {
+      const response = oauthJson({ error: "slow_down", error_description: "Too many token requests" }, 429);
+      response.headers.set("Retry-After", String(rate.retryAfterSeconds));
+      return response;
+    }
     const params = await formParameters(request);
     const grantType = params.get("grant_type");
     if (!grantType) throw new OAuthError("grant_type is required");
     if (grantType === "client_credentials") throw new OAuthError("The client_credentials grant is not supported", "unsupported_grant_type");
-    const rate = await checkOAuthRateLimitDistributed("token", trustedProxyClientIp(request), { limit: 30, windowMs: 5 * 60 * 1000 });
-    if (!rate.allowed) throw new OAuthError("Too many token requests", "slow_down", 429);
+
     const credentials = clientCredentials(request, params);
     const client = await getClient(credentials.clientId);
     if (!client) throw new OAuthError("Client authentication failed", "invalid_client", 401);

@@ -293,6 +293,26 @@ const defaultDependencies: SafeRequestDependencies = {
     request: nodePinnedRequest
 };
 
+/** The Node 24 native lookup callback has distinct shapes for options.all. */
+export function createPinnedDnsLookup(pinnedAddress: string): typeof dns.lookup {
+    const family = net.isIP(pinnedAddress);
+    if (!family) throw new TypeError("Pinned DNS address must be an IP literal");
+    const callback = (
+        _hostname: string,
+        optionsOrCallback: unknown,
+        maybeCallback?: (...args: unknown[]) => void
+    ) => {
+        const done = (typeof optionsOrCallback === "function"
+            ? optionsOrCallback : maybeCallback) as ((...args: unknown[]) => void) | undefined;
+        if (!done) throw new TypeError("DNS lookup callback missing");
+        const all = typeof optionsOrCallback === "object" && optionsOrCallback !== null &&
+            "all" in optionsOrCallback && optionsOrCallback.all === true;
+        if (all) done(null, [{ address: pinnedAddress, family }]);
+        else done(null, pinnedAddress, family);
+    };
+    return callback as typeof dns.lookup;
+}
+
 function nodePinnedRequest(url: URL, pinnedAddress: string, options: SafeRequestOptions): Promise<SafeHttpResponse> {
     return new Promise((resolve, reject) => {
         const transport = url.protocol === "https:" ? https : http;
@@ -308,9 +328,7 @@ function nodePinnedRequest(url: URL, pinnedAddress: string, options: SafeRequest
             headers: { ...headers, host: url.host },
             // A fresh socket ensures no pooled connection bypasses the validated IP.
             agent: false,
-            lookup: (_hostname: string, _lookupOptions: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => {
-                callback(null, pinnedAddress, net.isIP(pinnedAddress));
-            },
+            lookup: createPinnedDnsLookup(pinnedAddress),
             ...(url.protocol === "https:" && !net.isIP(host) ? { servername: host } : {})
         };
         const request = transport.request(requestOptions, response => {
