@@ -27,6 +27,12 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Registration is currently disabled by the administrator" }, { status: 403 });
         }
 
+        const existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+        if (existingUser) return NextResponse.json(
+            { error: "An account with this email already exists", code: "EMAIL_ALREADY_EXISTS" },
+            { status: 409, headers: { "Cache-Control": "no-store" } },
+        );
+
         const hashedPassword = await bcrypt.hash(password, 10);
         const newUser = await prisma.$transaction(async (transaction) => {
             const user = await transaction.user.create({
@@ -58,11 +64,15 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid registration data provided" }, { status: 400 });
         }
         if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
-            const existing = await prisma.user.findUnique({ where: { email: submittedEmail }, select: { id: true, email: true, name: true, emailVerified: true } });
-            if (existing && !existing.emailVerified) {
-                try { await sendVerificationEmail(existing, new URL(req.url), undefined, requestBasePath(req.headers)); } catch { /* Keep the response indistinguishable; the resend endpoint supports recovery. */ }
-            }
-            return NextResponse.json({ success: true, message: "If this address can be registered, a verification email will be sent." }, { status: 202 });
+            // A concurrent registration may win between the precheck and create.
+            // Only classify a confirmed email conflict as an existing account.
+            const existing = submittedEmail
+                ? await prisma.user.findUnique({ where: { email: submittedEmail }, select: { id: true } })
+                : null;
+            if (existing) return NextResponse.json(
+                { error: "An account with this email already exists", code: "EMAIL_ALREADY_EXISTS" },
+                { status: 409, headers: { "Cache-Control": "no-store" } },
+            );
         }
         console.error("Registration error:", error instanceof Error ? error.name : "unknown");
         return NextResponse.json({ error: "Internal server error during registration" }, { status: 500 });

@@ -68,6 +68,10 @@ export default function RegisterPage() {
                 }),
             });
 
+            if (response.status === 409) {
+                setError(t('register.emailAlreadyExists'));
+                return;
+            }
             if (response.status === 503) {
                 setSuccess(true);
                 setNotice(t('verify.resendFailed'));
@@ -145,6 +149,11 @@ export default function RegisterPage() {
                     {error && (
                         <div role="alert" aria-live="assertive" className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-center text-sm font-medium text-destructive animate-in shake duration-300 motion-reduce:animate-none">
                             {error}
+                            {error === t('register.emailAlreadyExists') && (
+                                <Link href="/auth/forgot-password" className="mt-2 block underline">
+                                    {t('login.forgotPassword')}
+                                </Link>
+                            )}
                         </div>
                     )}
 

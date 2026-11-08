@@ -1,10 +1,11 @@
 import Link from "@/components/app-link";
 import type { Metadata } from "next";
 import { ArrowLeft, ShieldCheck, Scale } from "lucide-react";
-import { getBrandConfig } from "@/lib/branding-server";
+import { getRequestBrandConfig } from "@/lib/branding-server";
+import { BrandMark } from "@/components/auth/brand-mark";
 
 export async function generateMetadata(): Promise<Metadata> {
-    const brand = await getBrandConfig();
+    const brand = await getRequestBrandConfig();
     const title = `Terms of Service | ${brand.name}`;
     const description = `Terms of Service for ${brand.name}, a self-hosted WhatsApp Gateway. Usage guidelines, security requirements, and acceptable use policy.`;
     return {
@@ -16,7 +17,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function TermsPage() {
-    const brand = await getBrandConfig();
+    const brand = await getRequestBrandConfig();
     return (
         <div className="min-h-screen bg-background relative overflow-hidden py-24 selection:bg-primary/30 selection:text-primary-foreground">
             {/* Ambient background glows */}
@@ -26,11 +27,7 @@ export default async function TermsPage() {
             <div className="container max-w-4xl px-4 mx-auto relative z-10">
 
                 <div className="flex items-center gap-2 mb-6 text-sm font-semibold text-foreground" aria-label={brand.name}>
-                    {brand.logoUrl ? (
-                        <img src={brand.logoUrl} alt="" className="h-8 w-8 rounded-xl object-cover" />
-                    ) : (
-                        <span className="h-8 w-8 rounded-xl bg-primary text-primary-foreground grid place-items-center text-xs font-bold">{brand.initials}</span>
-                    )}
+                    <BrandMark className="h-8 w-8 rounded-xl" />
                     <span>{brand.name}</span>
                 </div>
 

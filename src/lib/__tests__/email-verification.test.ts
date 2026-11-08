@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import nodemailer from "nodemailer";
 import { prisma } from "../prisma";
 import { consumeVerificationToken, isVerificationResendAllowed, sendVerificationEmail } from "../email-verification";
+import type { VerificationLogEvent } from "../email-verification-log";
 
 function override(target: object, key: string, value: unknown) {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
@@ -23,6 +24,8 @@ test("SMTP sends a one-time verification link with TLS and authentication settin
   let stored: { id: string; tokenHash: string; expiresAt: Date } | undefined;
   let mail: { from: string; to: string; subject: string; text: string; html: string } | undefined;
   let transportOptions: unknown;
+  const events: VerificationLogEvent[] = [];
+  const recordEvent = async (event: VerificationLogEvent) => { events.push(event); };
   const restore = [
     override(tokenDelegate, "count", async () => 0),
     override(tokenDelegate, "create", async (args: { data: { tokenHash: string; expiresAt: Date } }) => {
@@ -30,7 +33,7 @@ test("SMTP sends a one-time verification link with TLS and authentication settin
       return stored;
     }),
   ];
-  const env = ["BASE_URL", "OAUTH_ISSUER_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"] as const;
+  const env = ["BASE_URL", "OAUTH_ISSUER_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "RESEND_API_KEY"] as const;
   const previousEnv = new Map(env.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
     BASE_URL: "https://wa-akg.example.test",
@@ -40,14 +43,14 @@ test("SMTP sends a one-time verification link with TLS and authentication settin
     SMTP_SECURE: "true",
     SMTP_USER: "smtp-user",
     SMTP_PASSWORD: "smtp-password",
-    SMTP_FROM: "WA-AKG <no-reply@example.test>",
+    SMTP_FROM: "WA-AKG <no-reply@example.test>", RESEND_API_KEY: "",
   });
   const factory = ((options: unknown) => {
     transportOptions = options;
     return { sendMail: async (message: unknown) => { mail = message as typeof mail; } };
   }) as unknown as typeof nodemailer.createTransport;
   try {
-    const result = await sendVerificationEmail({ id: "user-1", email: "user@example.test", name: "A <B>" }, new URL("https://untrusted.example.test/api/auth/register"), factory, "/deploy");
+    const result = await sendVerificationEmail({ id: "user-1", email: "user@example.test", name: "A <B>" }, new URL("https://untrusted.example.test/api/auth/register"), factory, "/deploy", recordEvent);
     assert.deepEqual(result, { sent: true, limited: false });
     assert.deepEqual(transportOptions, {
       host: "smtp.example.test", port: 465, secure: true,
@@ -61,12 +64,14 @@ test("SMTP sends a one-time verification link with TLS and authentication settin
     assert.equal(stored?.tokenHash, createHash("sha256").update(link.searchParams.get("token")!).digest("hex"));
     assert.match(mail!.html, /A &lt;B&gt;/);
     assert.equal(mail!.to, "user@example.test");
+    assert.deepEqual(events.map((event) => event.status), ["created", "sent"]);
+    assert.equal(events.every((event) => event.email === "user@example.test" && !event.recoveryUrl), true);
   } finally {
     for (const restoreOne of restore.reverse()) restoreOne();
     for (const key of env) {
       const value = previousEnv.get(key);
       if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      else Object.assign(process.env, { [key]: value });
     }
   }
 });
@@ -74,6 +79,8 @@ test("SMTP sends a one-time verification link with TLS and authentication settin
 test("SMTP delivery failure consumes the generated token so resend can safely recover", async () => {
   const tokenDelegate = prisma.emailVerificationToken;
   let revoked = false;
+  const events: VerificationLogEvent[] = [];
+  const recordEvent = async (event: VerificationLogEvent) => { events.push(event); };
   const restore = [
     override(tokenDelegate, "count", async () => 0),
     override(tokenDelegate, "create", async () => ({ id: "failed-mail" })),
@@ -82,23 +89,80 @@ test("SMTP delivery failure consumes the generated token so resend can safely re
       return { count: revoked ? 1 : 0 };
     }),
   ];
-  const env = ["BASE_URL", "OAUTH_ISSUER_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"] as const;
+  const env = ["BASE_URL", "OAUTH_ISSUER_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "RESEND_API_KEY", "NODE_ENV", "EMAIL_VERIFICATION_LOCAL_RECOVERY"] as const;
   const previousEnv = new Map(env.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
+    NODE_ENV: "production", EMAIL_VERIFICATION_LOCAL_RECOVERY: "true",
     BASE_URL: "https://wa-akg.example.test", OAUTH_ISSUER_URL: "",
     SMTP_HOST: "smtp.example.test", SMTP_PORT: "587", SMTP_SECURE: "false",
-    SMTP_USER: "", SMTP_PASSWORD: "", SMTP_FROM: "WA-AKG <no-reply@example.test>",
+    SMTP_USER: "", SMTP_PASSWORD: "", SMTP_FROM: "WA-AKG <no-reply@example.test>", RESEND_API_KEY: "",
   });
   const factory = (() => ({ sendMail: async () => { throw new Error("SMTP unavailable"); } })) as unknown as typeof nodemailer.createTransport;
   try {
-    await assert.rejects(sendVerificationEmail({ id: "user-1", email: "user@example.test", name: null }, new URL("https://wa-akg.example.test/register"), factory));
+    await assert.rejects(sendVerificationEmail({ id: "user-1", email: "user@example.test", name: null }, new URL("https://wa-akg.example.test/register"), factory, "", recordEvent));
     assert.equal(revoked, true);
+    assert.deepEqual(events.map((event) => event.status), ["created", "delivery_failed"]);
+    assert.equal(events.some((event) => "recoveryUrl" in event), false);
+    assert.equal(events[1].errorCode, "EMAIL_DELIVERY_FAILED");
   } finally {
     for (const restoreOne of restore.reverse()) restoreOne();
     for (const key of env) {
       const value = previousEnv.get(key);
       if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      else Object.assign(process.env, { [key]: value });
+    }
+  }
+});
+
+test("development opt-in keeps a usable recovery URL only in the injected test log", async () => {
+  const delegate = prisma.emailVerificationToken;
+  const events: VerificationLogEvent[] = [];
+  let tokenHash = "";
+  let revoked = false;
+  const restore = [
+    override(delegate, "count", async () => 0),
+    override(delegate, "create", async (args: { data: { tokenHash: string } }) => {
+      tokenHash = args.data.tokenHash;
+      return { id: "local-recovery-fixture" };
+    }),
+    override(delegate, "updateMany", async () => {
+      revoked = true;
+      return { count: 1 };
+    }),
+  ];
+  const keys = ["NODE_ENV", "EMAIL_VERIFICATION_LOCAL_RECOVERY", "BASE_URL", "OAUTH_ISSUER_URL", "SMTP_HOST", "SMTP_FROM", "RESEND_API_KEY"] as const;
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    NODE_ENV: "development",
+    EMAIL_VERIFICATION_LOCAL_RECOVERY: "true",
+    BASE_URL: "https://wa-akg.example.test",
+    OAUTH_ISSUER_URL: "",
+    SMTP_HOST: "smtp.example.test",
+    SMTP_FROM: "no-reply@example.test", RESEND_API_KEY: "",
+  });
+  const factory = (() => ({ sendMail: async () => { throw new Error("SMTP unavailable"); } })) as unknown as typeof nodemailer.createTransport;
+  try {
+    await assert.rejects(sendVerificationEmail(
+      { id: "user-1", email: "user@example.test", name: null },
+      new URL("https://wa-akg.example.test/register"),
+      factory,
+      "",
+      async (event) => { events.push(event); },
+    ));
+    assert.equal(revoked, false);
+    assert.deepEqual(events.map((event) => event.status), ["created", "delivery_failed"]);
+    assert.equal(events[0].recoveryUrl, undefined);
+    assert.ok(events[1].recoveryUrl);
+    const recovery = new URL(events[1].recoveryUrl);
+    assert.equal(recovery.origin, "https://wa-akg.example.test");
+    assert.equal(recovery.pathname, "/auth/verify-email");
+    assert.equal(createHash("sha256").update(recovery.searchParams.get("token")!).digest("hex"), tokenHash);
+  } finally {
+    for (const undo of restore.reverse()) undo();
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else Object.assign(process.env, { [key]: value });
     }
   }
 });

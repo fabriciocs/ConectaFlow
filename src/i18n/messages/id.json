@@ -153,7 +153,8 @@
       "submitting": "Mengautentikasi...",
       "submit": "Masuk",
       "noAccount": "Belum punya akun?",
-      "createAccount": "Buat akun"
+      "createAccount": "Buat akun",
+      "forgotPassword": "Lupa kata sandi?"
     },
     "register": {
       "title": "Buat Akun",
@@ -165,6 +166,7 @@
       "passwordMin": "Kata sandi minimal {min} karakter",
       "passwordMismatch": "Kata sandi tidak cocok",
       "failed": "Gagal mendaftar",
+      "emailAlreadyExists": "Email ini sudah terdaftar. Silakan masuk atau atur ulang kata sandi.",
       "submitting": "Membuat Akun...",
       "submit": "Daftar",
       "successTitle": "Pendaftaran Berhasil!",
@@ -172,6 +174,20 @@
       "terms": "Dengan mendaftar, Anda menyetujui <terms>Ketentuan Layanan</terms> dan <privacy>Kebijakan Privasi</privacy> kami.",
       "haveAccount": "Sudah punya akun?",
       "signIn": "Masuk"
+    },
+    "recovery": {
+      "title": "Pulihkan kata sandi",
+      "description": "Masukkan email untuk menerima tautan pengaturan ulang kata sandi.",
+      "send": "Kirim tautan pemulihan",
+      "sent": "Jika akun tersedia untuk email ini, tautan pemulihan akan dikirim.",
+      "backToLogin": "Kembali ke masuk",
+      "unavailable": "Layanan tidak tersedia sementara. Coba lagi nanti.",
+      "resetTitle": "Atur kata sandi baru",
+      "newPassword": "Kata sandi baru",
+      "reset": "Ubah kata sandi",
+      "invalidLink": "Tautan tidak valid atau kedaluwarsa. Minta tautan baru.",
+      "invalidPassword": "Kata sandi harus terdiri dari 6 sampai 128 karakter.",
+      "completed": "Kata sandi telah diubah. Anda sekarang dapat masuk."
     },
     "verify": {
       "title": "Konfirmasi email Anda",

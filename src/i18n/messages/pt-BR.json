@@ -153,7 +153,8 @@
       "submitting": "Autenticando...",
       "submit": "Entrar",
       "noAccount": "Não tem uma conta?",
-      "createAccount": "Criar uma conta"
+      "createAccount": "Criar uma conta",
+      "forgotPassword": "Esqueceu sua senha?"
     },
     "register": {
       "title": "Criar Conta",
@@ -165,6 +166,7 @@
       "passwordMin": "A senha deve ter pelo menos {min} caracteres",
       "passwordMismatch": "As senhas não coincidem",
       "failed": "Falha no cadastro",
+      "emailAlreadyExists": "Este e-mail já está cadastrado. Entre na conta ou recupere sua senha.",
       "submitting": "Criando Conta...",
       "submit": "Cadastrar",
       "successTitle": "Cadastro Realizado!",
@@ -172,6 +174,20 @@
       "terms": "Ao se cadastrar, você concorda com nossos <terms>Termos de Serviço</terms> e <privacy>Política de Privacidade</privacy>.",
       "haveAccount": "Já tem uma conta?",
       "signIn": "Entrar"
+    },
+    "recovery": {
+      "title": "Recuperar senha",
+      "description": "Informe seu e-mail para receber um link de recuperação.",
+      "send": "Enviar link de recuperação",
+      "sent": "Se existir uma conta com este e-mail, enviaremos um link de recuperação.",
+      "backToLogin": "Voltar ao login",
+      "unavailable": "Serviço indisponível no momento. Tente novamente.",
+      "resetTitle": "Definir nova senha",
+      "newPassword": "Nova senha",
+      "reset": "Alterar senha",
+      "invalidLink": "Link inválido ou expirado. Solicite um novo link.",
+      "invalidPassword": "A senha deve ter entre 6 e 128 caracteres.",
+      "completed": "Senha alterada. Você já pode entrar com a nova senha."
     },
     "verify": {
       "title": "Confirme seu e-mail",

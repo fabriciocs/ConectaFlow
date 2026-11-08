@@ -18,6 +18,8 @@ test("uses forwarded public scheme and host for redirects behind the proxy", () 
   });
   assert.equal(requestPublicOrigin(headers, "http://127.0.0.1:43000"), "https://gauntlet-fruit-discount.ngrok-free.dev");
   assert.equal(requestPublicOrigin(new Headers(), "http://localhost:43000"), "http://localhost:43000");
+  assert.equal(requestPublicOrigin(new Headers({ host: "localhost:43000" }), "http://fallback.invalid"), "http://localhost:43000");
+  assert.equal(requestPublicOrigin(new Headers({ host: "localhost:8080", "x-forwarded-proto": "https" }), "http://fallback.invalid"), "https://localhost:8080");
 });
 
 test("strips only the configured prefix while preserving the route", () => {
@@ -31,6 +33,32 @@ test("keeps login callback URLs same-origin and prefix-safe", () => {
   assert.equal(safeCallbackPath("https://attacker.example.test/steal", "/wa-akg"), "/wa-akg/dashboard");
   assert.equal(safeCallbackPath("//attacker.example.test/steal", "/wa-akg"), "/wa-akg/dashboard");
   assert.equal(safeCallbackPath("/\\\\attacker.example.test", "/wa-akg"), "/wa-akg/dashboard");
+});
+
+test("uses the real loaded browser path instead of a server-side path hint", async () => {
+  const { basePathFromPathname } = await import("../base-path");
+  assert.equal(basePathFromPathname("/auth/login"), "");
+  assert.equal(basePathFromPathname("/dashboard"), "");
+  assert.equal(basePathFromPathname("/wa-akg"), "/wa-akg");
+  assert.equal(basePathFromPathname("/wa-akg/auth/forgot-password"), "/wa-akg");
+  assert.equal(basePathFromPathname("/customer/portal/dashboard/sessions/123"), "/customer/portal");
+
+  const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      location: { pathname: "/wa-akg/auth/login" },
+      documentElement: { dataset: { basePath: "" } },
+    },
+  });
+  try {
+    assert.equal(clientBasePath(), "/wa-akg");
+    (globalThis.document as { location: { pathname: string } }).location.pathname = "/auth/login";
+    assert.equal(clientBasePath(), "");
+  } finally {
+    if (original) Object.defineProperty(globalThis, "document", original);
+    else Reflect.deleteProperty(globalThis, "document");
+  }
 });
 
 test("reads the runtime prefix rendered on the document", () => {

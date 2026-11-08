@@ -6,8 +6,9 @@ import { TopLoader } from "@/components/ui/top-loader";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale } from "next-intl/server";
 import { headers } from "next/headers";
-import { requestBasePath } from "@/lib/base-path";
-import { getBrandConfig } from "@/lib/branding-server";
+import { requestBasePath, requestPublicOrigin, withBasePath } from "@/lib/base-path";
+import { resolvePublicAssetUrl } from "@/lib/public-asset-url";
+import { getRequestBrandConfig } from "@/lib/branding-server";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,18 +20,6 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const APP_URL = (() => {
-  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.BASE_URL || "http://localhost:43000";
-  const baseUrl = process.env.BASE_URL || "http://localhost:43000";
-
-  try {
-    return new URL(configuredUrl).toString();
-  } catch {
-    // NEXT_PUBLIC_APP_URL may be a path such as the configured Next.js basePath.
-    return new URL(configuredUrl, baseUrl).toString();
-  }
-})();
-
 export const viewport: Viewport = {
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#F6F7EF" },
@@ -41,14 +30,19 @@ export const viewport: Viewport = {
 };
 
 export async function generateMetadata(): Promise<Metadata> {
-  const brandConfig = await getBrandConfig();
+  const requestHeaders = await headers();
+  const basePath = requestBasePath(requestHeaders);
+  const publicOrigin = requestPublicOrigin(requestHeaders, "http://localhost:43000");
+  const socialImage = resolvePublicAssetUrl("/brand/conectaflow-social.png", basePath);
+  const brandConfig = await getRequestBrandConfig();
   const appName = brandConfig.name;
   const appDescription = brandConfig.description;
 
   const appDefaultTitle = `${appName} | Conversas, automações e equipes`;
 
   return {
-    metadataBase: new URL(APP_URL),
+    metadataBase: new URL(publicOrigin),
+    manifest: withBasePath("/manifest.webmanifest", basePath),
     title: {
       default: appDefaultTitle,
       template: `%s | ${appName}`,
@@ -82,14 +76,14 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       locale: "en_US",
       siteName: appName,
-      images: [{ url: "/brand/conectaflow-social.png", width: 1200, height: 630, alt: `${appName}: conversas e automações` }],
+      images: [{ url: socialImage, width: 1200, height: 630, alt: `${appName}: conversas e automações` }],
       title: appDefaultTitle,
       description: appDescription,
-      url: APP_URL,
+      url: `${publicOrigin}${withBasePath("/", basePath)}`,
     },
     twitter: {
       card: "summary_large_image",
-      images: ["/brand/conectaflow-social.png"],
+      images: [socialImage],
       title: appDefaultTitle,
       description: appDescription,
     },
@@ -110,16 +104,13 @@ export default async function RootLayout({
   const allowIndexing = process.env.NEXT_PUBLIC_ALLOW_INDEXING === "true";
   const locale = await getLocale();
   const basePath = requestBasePath(await headers());
-  const brandConfig = await getBrandConfig();
+  const brandConfig = await getRequestBrandConfig();
 
   return (
     <html lang={locale} data-base-path={basePath} suppressHydrationWarning className="scroll-smooth">
       <head>
         {/* Conditional robots meta (noindex for staging/dev) */}
         {!allowIndexing && <meta name="robots" content="noindex, nofollow" />}
-        {/* DNS prefetch for performance */}
-        <link rel="dns-prefetch" href={APP_URL} />
-        <link rel="preconnect" href={APP_URL} crossOrigin="anonymous" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased text-foreground bg-background selection:bg-primary/30 selection:text-primary-foreground min-h-screen flex flex-col`}

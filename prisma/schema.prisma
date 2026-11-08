@@ -36,6 +36,17 @@ enum TenantMembershipStatus {
   SUSPENDED
 }
 
+enum ChannelIdentityLinkStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+enum ChannelLinkChallengePurpose {
+  LINK_IDENTITY
+}
+
 enum MessageType {
   TEXT
   IMAGE
@@ -75,6 +86,8 @@ model User {
   webhooks                   Webhook[]
   notifications              Notification[]
   sessionAccesses            SessionAccess[]
+  channelIdentityLinks       ChannelIdentityLink[]
+  channelLinkChallenges      ChannelLinkChallenge[]
   oauthClients               OAuthClient[]               @relation("OAuthClientCreator")
   oauthGrants                OAuthGrant[]
   oauthAuthorizationRequests OAuthAuthorizationRequest[]
@@ -136,6 +149,8 @@ model Tenant {
   whatsappSendThrottles       WhatsAppSendThrottle[]
   notifications               Notification[]
   sessionAccesses             SessionAccess[]
+  channelIdentityLinks        ChannelIdentityLink[]
+  channelLinkChallenges       ChannelLinkChallenge[]
 }
 
 model TenantMembership {
@@ -310,6 +325,8 @@ model Session {
   botConfig         BotConfig?
   sessionAccesses   SessionAccess[]
   oauthGrantCapabilities OAuthGrantSessionCapability[]
+  channelIdentityLinks ChannelIdentityLink[]
+  channelLinkChallenges ChannelLinkChallenge[]
 
   @@index([tenantId, userId])
 }
@@ -741,6 +758,59 @@ model SessionAccess {
   @@index([tenantId, sessionId, userId])
   @@index([userId])
   @@index([sessionId])
+}
+
+model ChannelIdentityLink {
+  id               String                    @id @default(cuid())
+  tenantId         String
+  userId           String
+  sessionId        String
+  channel          String                    @default("WHATSAPP") @db.VarChar(32)
+  channelAccountId String                    @db.VarChar(191)
+  subjectHash      String                    @db.Char(64)
+  status           ChannelIdentityLinkStatus @default(ACTIVE)
+  linkedAt         DateTime                  @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  authTime         DateTime?
+  authMethod       String                    @db.VarChar(64)
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, channel, channelAccountId, subjectHash], map: "channel_identity_scope_uq")
+  @@index([tenantId, userId, status], map: "channel_identity_user_status_idx")
+  @@index([tenantId, status, expiresAt], map: "channel_identity_expiry_idx")
+  @@index([sessionId, subjectHash, status], map: "channel_identity_subject_idx")
+}
+
+model ChannelLinkChallenge {
+  id               String                    @id @default(cuid())
+  tenantId         String
+  userId           String?
+  sessionId        String
+  channel          String                    @default("WHATSAPP") @db.VarChar(32)
+  channelAccountId String                    @db.VarChar(191)
+  subjectHash      String                    @db.Char(64)
+  tokenHash        String                    @unique(map: "channel_link_token_hash_uq") @db.Char(64)
+  purpose          ChannelLinkChallengePurpose @default(LINK_IDENTITY)
+  createdAt        DateTime                  @default(now())
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  revokedAt        DateTime?
+  attemptCount     Int                       @default(0)
+  requestId        String?                   @db.VarChar(191)
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, sessionId, subjectHash, purpose, expiresAt], map: "channel_link_subject_idx")
+  @@index([tenantId, expiresAt, revokedAt], map: "channel_link_expiry_idx")
+  @@unique([tenantId, sessionId, requestId], map: "channel_link_request_uq")
 }
 
 model OAuthClient {

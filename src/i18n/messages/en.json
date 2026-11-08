@@ -153,7 +153,8 @@
       "submitting": "Authenticating...",
       "submit": "Sign In",
       "noAccount": "Don't have an account?",
-      "createAccount": "Create an account"
+      "createAccount": "Create an account",
+      "forgotPassword": "Forgot your password?"
     },
     "register": {
       "title": "Create Account",
@@ -165,6 +166,7 @@
       "passwordMin": "Password must be at least {min} characters",
       "passwordMismatch": "Passwords do not match",
       "failed": "Failed to register",
+      "emailAlreadyExists": "This email is already registered. Sign in or reset your password.",
       "submitting": "Creating Account...",
       "submit": "Register",
       "successTitle": "Registration Successful!",
@@ -172,6 +174,20 @@
       "terms": "By registering, you agree to our <terms>Terms of Service</terms> and <privacy>Privacy Policy</privacy>.",
       "haveAccount": "Already have an account?",
       "signIn": "Sign in"
+    },
+    "recovery": {
+      "title": "Recover password",
+      "description": "Enter your email address to receive a password reset link.",
+      "send": "Send recovery link",
+      "sent": "If an account exists for this email, a recovery link will be sent.",
+      "backToLogin": "Back to sign in",
+      "unavailable": "The service is temporarily unavailable. Please try again.",
+      "resetTitle": "Set a new password",
+      "newPassword": "New password",
+      "reset": "Change password",
+      "invalidLink": "This link is invalid or expired. Request a new link.",
+      "invalidPassword": "Password must be between 6 and 128 characters.",
+      "completed": "Your password has been updated. You can now sign in."
     },
     "verify": {
       "title": "Confirm your email",

@@ -43,7 +43,15 @@ export function POST(request: Request) {
         const user = await tx.user.create({
             data: { name, email, password: await bcrypt.hash(password, 10), role },
             select: userSelect,
+        }).catch((error: unknown) => {
+            if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
+                // The only caller-supplied unique value for this create is the global email.
+                // Return a conflict without querying inside a possibly snapshot-isolated transaction.
+                return null;
+            }
+            throw error;
         });
+        if (!user) return { status: 409, data: { status: false, message: "Email already exists" } };
         const tenantId = personalTenantId(user.id);
         await tx.tenant.create({
             data: {

@@ -140,6 +140,17 @@ The historical heuristic pass found **0 methods with no auth marker or reviewed 
 - `GET` handlers that return shared session data were reviewed separately for QR and credential projection; owner/admin responses retain management data.
 - Public routes are expected only for registration/bootstrap, NextAuth protocol handling, Swagger password authentication, and OAuth protocol endpoints authenticated by client or bearer credentials.
 
+## Channel identity linking — new handlers
+
+Static review on branch `codex/auth-whatsapp-identity-linking-20261108`:
+
+| Route | Method | Authentication / access evidence | Remaining verification |
+|---|---|---|---|
+| `channel-links/challenges/route.ts` | `POST` | Exact route is passed through proxy to its handler; handler requires dedicated `x-wa-akg-channel-link-token`, feature flag, server-loaded connected session/tenant, and rate limits. | Verify deployment path/proxy behavior and internal caller; no inbound command is wired yet. |
+| `channel-links/complete/route.ts` | `POST` | `getTenantSessionUser` rejects API-key/OAuth identities; exact configured public origin; active membership from challenge tenant; one-time transactional consume. | HTTP CSRF, replay/concurrency, and MySQL transaction behavior not tested. |
+| `channel-links/route.ts` | `GET` | Browser session, explicit active `x-tenant-id` membership, links filtered to own `userId`; no full channel identifier returned. | Authenticated tenant isolation not runtime-tested. |
+| `channel-links/[linkId]/route.ts` | `DELETE` | Browser session, exact configured origin, active selected membership, link ID + tenant + own user filter. | CSRF and revocation tests not run. |
+
 ## Additional runtime evidence (2026-10-24)
 
 The current route tree was enumerated again: 95 route files with 125 declared HTTP methods. The middleware in `src/proxy.ts` handles every `/api/*` request before the route handler and returns 401 when no session or API key is present; only `/api/auth/*` skips that guard. This ordering makes unauthenticated checks safe for guarded mutation routes because their handlers are not invoked. The sweep sent each declared method to local placeholder paths for every route except the three public registration/NextAuth methods listed above. All **122 requests returned 401**, no redirects, and response bodies were cancelled without reading. This is evidence of anonymous middleware rejection only, not authenticated authorization or business behavior.
