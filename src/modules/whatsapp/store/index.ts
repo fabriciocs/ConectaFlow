@@ -5,6 +5,7 @@ import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { onMessageReceived, onMessageSent, dispatchWebhook, downloadAndSaveMedia } from "@/lib/webhook";
 import { buildInboundWebhookEnvelope, linkInboundEvent, recordInboundEvent } from "../inbound-event.service";
 import { handleBotCommand, setSessionStartTime } from "../bot/command-handler";
+import { handleChannelLinkCommand, isChannelLinkCommand } from "../channel-link-handler";
 import { resolveToPhoneJid, isLidJid, normalizeJid } from "@/lib/jid-utils";
 
 import { Server } from "socket.io";
@@ -61,8 +62,12 @@ export const bindSessionStore = (sock: WASocket, binding: WhatsAppSessionBinding
 
                 // Execute Bot Commands (Only for Notify / New Messages)
                 if (type === 'notify' && savedMessage) {
-                    // Run in background, don't await strictly to not block saving
-                    handleBotCommand(sock, sessionId, msg).catch(e => logger.error("Bot", "Bot Handler Error", e));
+                    if (isChannelLinkCommand(msg)) {
+                        handleChannelLinkCommand(sock, sessionId, msg).catch(() => logger.warn("ChannelLink", "Link command processing failed"));
+                    } else {
+                        // Run in background, don't await strictly to not block saving
+                        handleBotCommand(sock, sessionId, msg).catch(e => logger.error("Bot", "Bot Handler Error", e));
+                    }
                 }
             } catch (error) {
                 logger.error("Store", "Error saving message", error);

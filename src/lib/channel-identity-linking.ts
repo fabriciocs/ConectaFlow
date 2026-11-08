@@ -59,12 +59,16 @@ export function channelLinkOriginMatches(request: Request) {
   return request.headers.get("origin") === origin;
 }
 
-export async function checkChannelChallengeQuota(subjectHash: string, request: Request) {
-  const [bySubject, byIp] = await Promise.all([
+export async function checkChannelChallengeQuota(subjectHash: string, tenantId: string, request?: Request) {
+  const limits = [
     checkOAuthRateLimitDistributed("channel-link-subject", subjectHash, { limit: 3, windowMs: 60 * 60_000 }),
-    checkOAuthRateLimitDistributed("channel-link-origin", trustedProxyClientIp(request), { limit: 30, windowMs: 60 * 60_000 }),
-  ]);
-  return bySubject.allowed && byIp.allowed;
+    checkOAuthRateLimitDistributed("channel-link-tenant", tenantId, { limit: 300, windowMs: 60 * 60_000 }),
+  ];
+  if (request) limits.push(checkOAuthRateLimitDistributed(
+    "channel-link-origin", trustedProxyClientIp(request), { limit: 30, windowMs: 60 * 60_000 },
+  ));
+  const results = await Promise.all(limits);
+  return results.every((result) => result.allowed);
 }
 
 /**
@@ -76,7 +80,7 @@ export async function issueChannelLinkChallenge(input: {
   sessionId: string;
   jid: string;
   requestId?: string | null;
-  request: Request;
+  request?: Request;
 }) {
   if (!isChannelLinkingEnabled()) throw new ChannelLinkError("DISABLED");
   const subject = canonicalWhatsAppSubject(input.jid);
@@ -84,20 +88,22 @@ export async function issueChannelLinkChallenge(input: {
 
   const session = await prisma.session.findUnique({
     where: { sessionId: input.sessionId },
-    select: { id: true, sessionId: true, tenantId: true, status: true, tenant: { select: { status: true } } },
+    select: { id: true, sessionId: true, tenantId: true, status: true,
+      tenant: { select: { status: true, suspendedAt: true } } },
   });
-  if (!session?.tenantId || session.status !== "CONNECTED" || session.tenant?.status !== "ACTIVE") {
+  if (!session?.tenantId || session.status !== "CONNECTED" || session.tenant?.status !== "ACTIVE" || session.tenant.suspendedAt) {
     throw new ChannelLinkError("INVALID");
   }
 
   const subjectHash = hashSubject(subject);
-  if (!(await checkChannelChallengeQuota(subjectHash, input.request))) throw new ChannelLinkError("RATE_LIMITED");
+  if (!(await checkChannelChallengeQuota(subjectHash, session.tenantId, input.request))) throw new ChannelLinkError("RATE_LIMITED");
 
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
   const expiresAt = new Date(now.getTime() + TOKEN_TTL_MS);
   const requestId = input.requestId ? createHash("sha256").update(input.requestId).digest("hex") : null;
-  await prisma.$transaction(async (tx) => {
+  const { origin, basePath } = configuredPublicOrigin();
+  const challengeId = await prisma.$transaction(async (tx) => {
     await tx.channelLinkChallenge.updateMany({
       where: {
         tenantId: session.tenantId!, sessionId: session.id, subjectHash,
@@ -105,23 +111,37 @@ export async function issueChannelLinkChallenge(input: {
       },
       data: { revokedAt: now },
     });
-    await tx.channelLinkChallenge.create({
+    const challenge = await tx.channelLinkChallenge.create({
       data: {
         tenantId: session.tenantId!, sessionId: session.id,
         channelAccountId: session.sessionId, subjectHash, tokenHash: hashToken(token),
         expiresAt, requestId,
       },
+      select: { id: true },
     });
     await tx.auditEvent.create({ data: {
       tenantId: session.tenantId, action: "LINK_REQUESTED", outcome: "SUCCESS",
       resourceType: "ChannelLinkChallenge", requestId,
     } });
+    return challenge.id;
   });
 
-  const { origin, basePath } = configuredPublicOrigin();
   const url = new URL(withBasePath("/auth/channel-link", basePath), origin);
-  url.searchParams.set("token", token);
-  return { url: url.toString(), expiresAt };
+  url.hash = new URLSearchParams({ token }).toString();
+  return { url: url.toString(), expiresAt, challengeId, tenantId: session.tenantId };
+}
+
+export async function recordChannelChallengeDeliveryFailure(input: {
+  tenantId: string;
+  challengeId: string;
+  requestId?: string | null;
+}) {
+  const requestId = input.requestId ? createHash("sha256").update(input.requestId).digest("hex") : null;
+  await prisma.auditEvent.create({ data: {
+    tenantId: input.tenantId, action: "LINK_DENIED", outcome: "FAILURE",
+    reason: "OUTBOUND_DELIVERY_FAILED", resourceType: "ChannelLinkChallenge",
+    resourceId: input.challengeId, requestId,
+  } });
 }
 
 export async function completeChannelLink(token: string, userId: string) {

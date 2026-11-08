@@ -19,7 +19,7 @@ export async function proxy(request: NextRequest) {
     // Public routes that don't require authentication
     const publicRoutes = [
         "/auth/login", "/auth/register", "/auth/verify-email",
-        "/auth/forgot-password", "/auth/reset-password",
+        "/auth/forgot-password", "/auth/reset-password", "/auth/channel-link",
         "/api/auth", "/terms", "/privacy",
     ];
 

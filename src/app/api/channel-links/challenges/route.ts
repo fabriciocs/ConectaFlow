@@ -18,7 +18,13 @@ export async function POST(request: Request) {
   }
 
   let body: unknown;
-  try { body = await request.json(); } catch {
+  try {
+    const raw = await request.text();
+    if (Buffer.byteLength(raw, "utf8") > 2048) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 413, headers: noStore });
+    }
+    body = JSON.parse(raw);
+  } catch {
     return NextResponse.json({ error: "Invalid request" }, { status: 400, headers: noStore });
   }
   const parsed = schema.safeParse(body);
@@ -26,7 +32,7 @@ export async function POST(request: Request) {
 
   try {
     const challenge = await issueChannelLinkChallenge({ ...parsed.data, request });
-    return NextResponse.json(challenge, { status: 201, headers: noStore });
+    return NextResponse.json({ url: challenge.url, expiresAt: challenge.expiresAt }, { status: 201, headers: noStore });
   } catch (error) {
     if (error instanceof ChannelLinkError) {
       const status = error.code === "DISABLED" ? 404

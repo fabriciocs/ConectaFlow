@@ -1,15 +1,30 @@
 'use client';
 
-import { Suspense, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
 import { apiUrl } from '@/lib/api-url';
 import { clientBasePath, withBasePath } from '@/lib/base-path';
 
 function ChannelLinkForm() {
-  const token = useSearchParams().get('token') || '';
+  const [token, setToken] = useState('');
+  const [ready, setReady] = useState(false);
   const [pending, setPending] = useState(false);
   const [complete, setComplete] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const fromFragment = new URLSearchParams(window.location.hash.slice(1)).get('token') || '';
+    const storageKey = 'wa-akg-channel-link-token';
+    let fromStorage = '';
+    try {
+      fromStorage = sessionStorage.getItem(storageKey) || '';
+      sessionStorage.removeItem(storageKey);
+    } catch { /* Storage may be disabled by the browser. */ }
+    if (window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    setToken(fromFragment || fromStorage);
+    setReady(true);
+  }, []);
 
   async function completeLink() {
     setPending(true);
@@ -23,8 +38,13 @@ function ChannelLinkForm() {
         body: JSON.stringify({ token }),
       });
       if (response.status === 401) {
+        try { sessionStorage.setItem('wa-akg-channel-link-token', token); }
+        catch {
+          setError('This browser cannot preserve the link while signing in. Enable session storage and reopen the WhatsApp link.');
+          return;
+        }
         const basePath = clientBasePath();
-        const callbackUrl = withBasePath(`/auth/channel-link?token=${encodeURIComponent(token)}`, basePath);
+        const callbackUrl = withBasePath('/auth/channel-link', basePath);
         window.location.assign(`${withBasePath('/auth/login', basePath)}?callbackUrl=${encodeURIComponent(callbackUrl)}`);
         return;
       }
@@ -37,6 +57,7 @@ function ChannelLinkForm() {
     }
   }
 
+  if (!ready) return <main className="min-h-screen" />;
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
     return <p role="alert">This link is invalid or has expired.</p>;
   }
