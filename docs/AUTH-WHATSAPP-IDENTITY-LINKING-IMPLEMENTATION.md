@@ -1,7 +1,7 @@
 # WhatsApp identity linking — implementation status
 
 **Branch:** `codex/auth-whatsapp-identity-linking-20261108`
-**State:** `IMPLEMENTED` for additive persistence and the gated browser link lifecycle; `NOT_VERIFIED` pending generated Prisma client and runtime validation. The feature flag defaults to disabled.
+**State:** `IMPLEMENTED` for additive persistence and the gated browser link lifecycle; `NOT_VERIFIED` pending HTTP, concurrency, and real WhatsApp validation. The feature flag defaults to disabled.
 
 ## Implemented in this slice
 
@@ -20,11 +20,11 @@
 |---|---|---|
 | G0 discovery | PARTIAL | Session-bound tenant, inbound receipt, and direct-chat command path inspected. Real connector/JID variants remain unverified; unresolved LID senders are intentionally rejected. |
 | G1 design | PARTIAL | Auth.js session + existing active tenant membership selected. Account ownership model, confirmation back through WhatsApp, expiry/retention policy, and cross-tenant policy still need product decisions. |
-| G2 persistence | PARTIAL | `prisma validate` passed. Client generation failed with Windows `EPERM` replacing the query-engine DLL. Six Node processes associated with this checkout were present, but the DLL lock owner was not identified; none were stopped. Migration SQL review is incomplete and it was not applied. |
+| G2 persistence | PARTIAL | `prisma validate` and `prisma generate` passed (Prisma Client 5.22.0). Restart Manager found no active DLL lock before the successful retry; the earlier `EPERM` did not recur, and no process was terminated. Migration SQL review is incomplete and it was not applied. |
 | G3 linking lifecycle | IMPLEMENTED / NOT VERIFIED | Challenge issue and outbound DM, completion, list, and revoke handlers added. No HTTP/concurrency/security or real WhatsApp verification run. |
 | G4 private-operation enforcement | BLOCKED | Resolver and resource owner/grant helper exist, but no private operation in the bot, webhook, worker, MCP, or API consumes them yet. A link still authorizes no private action. |
-| G5 verification | PARTIAL | TypeScript transpile syntax check passed for 12 touched TS/TSX files with no diagnostics. Full typecheck and ESLint did not complete; tests and live WhatsApp flow were not run. |
-| G6 activation | DEFERRED | Feature flag remains false; no rollout, migration, or user communication. |
+| G5 verification | PARTIAL | Full TypeScript check passed; ESLint passed on the 12 affected TS/TSX files; `npm test` passed 272/272. The suite has no identity-link-specific cases, and no HTTP/concurrency or live WhatsApp flow was run. |
+| G6 activation | DEFERRED | No activation, rollout, migration, or user communication was performed; the default and example configuration keep the flag disabled. |
 
 ## Required next steps before activation
 

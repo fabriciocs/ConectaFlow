@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { jidNormalizedUser } from "@whiskeysockets/baileys";
+import { normalizeJid } from "@/lib/jid-utils";
 import { prisma } from "@/lib/prisma";
 import { checkOAuthRateLimitDistributed, trustedProxyClientIp } from "@/lib/oauth/dcr-rate-limit";
 import { normalizeBasePath, withBasePath } from "@/lib/base-path";

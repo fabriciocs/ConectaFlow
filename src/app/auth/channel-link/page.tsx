@@ -1,32 +1,42 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
+import { useAppRouter } from '@/components/app-base-path';
 import { apiUrl } from '@/lib/api-url';
 import { clientBasePath, withBasePath } from '@/lib/base-path';
 
+const storageKey = 'wa-akg-channel-link-token';
+
+function getInitialToken() {
+  if (typeof window === 'undefined') return '';
+  const fromFragment = new URLSearchParams(window.location.hash.slice(1)).get('token') || '';
+  if (fromFragment) return fromFragment;
+  try { return sessionStorage.getItem(storageKey) || ''; }
+  catch { return ''; }
+}
+
 function ChannelLinkForm() {
-  const [token, setToken] = useState('');
-  const [ready, setReady] = useState(false);
+  const [token] = useState(getInitialToken);
   const [pending, setPending] = useState(false);
   const [complete, setComplete] = useState(false);
   const [error, setError] = useState('');
+  const router = useAppRouter();
 
   useEffect(() => {
-    const fromFragment = new URLSearchParams(window.location.hash.slice(1)).get('token') || '';
-    const storageKey = 'wa-akg-channel-link-token';
-    let fromStorage = '';
-    try {
-      fromStorage = sessionStorage.getItem(storageKey) || '';
-      sessionStorage.removeItem(storageKey);
-    } catch { /* Storage may be disabled by the browser. */ }
+    if (token) {
+      try { sessionStorage.setItem(storageKey, token); }
+      catch { /* The link can still be completed in this page if storage is disabled. */ }
+    }
     if (window.location.hash) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
-    setToken(fromFragment || fromStorage);
-    setReady(true);
-  }, []);
+  }, [token]);
 
   async function completeLink() {
+    if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      setError('This link is invalid or has expired.');
+      return;
+    }
     setPending(true);
     setError('');
     try {
@@ -38,28 +48,24 @@ function ChannelLinkForm() {
         body: JSON.stringify({ token }),
       });
       if (response.status === 401) {
-        try { sessionStorage.setItem('wa-akg-channel-link-token', token); }
+        try { sessionStorage.setItem(storageKey, token); }
         catch {
           setError('This browser cannot preserve the link while signing in. Enable session storage and reopen the WhatsApp link.');
           return;
         }
         const basePath = clientBasePath();
         const callbackUrl = withBasePath('/auth/channel-link', basePath);
-        window.location.assign(`${withBasePath('/auth/login', basePath)}?callbackUrl=${encodeURIComponent(callbackUrl)}`);
+        router.push(`${withBasePath('/auth/login', basePath)}?callbackUrl=${encodeURIComponent(callbackUrl)}`);
         return;
       }
       if (!response.ok) throw new Error(response.status === 409 ? 'This channel is already connected to another account.' : 'This link is invalid or has expired.');
+      try { sessionStorage.removeItem(storageKey); } catch { /* Ignore storage cleanup failures. */ }
       setComplete(true);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Unable to connect this channel.');
     } finally {
       setPending(false);
     }
-  }
-
-  if (!ready) return <main className="min-h-screen" />;
-  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
-    return <p role="alert">This link is invalid or has expired.</p>;
   }
 
   return (
