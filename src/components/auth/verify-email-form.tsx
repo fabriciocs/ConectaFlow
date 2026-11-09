@@ -32,7 +32,7 @@ export function VerifyEmailForm({ token }: { token: string }) {
 
   return (
     <section className="w-full max-w-md rounded-2xl border bg-card p-8 text-center shadow-lg" aria-labelledby="verify-email-title">
-      <BrandMark className="mx-auto mb-6" />
+      <BrandMark homeLink className="mx-auto mb-6" />
       <p className="mb-2 text-sm font-semibold text-primary">{brand.name}</p>
       <h1 id="verify-email-title" className="text-2xl font-semibold">{t("title")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">{t("description")}</p>

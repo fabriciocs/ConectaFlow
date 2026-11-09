@@ -21,7 +21,9 @@ export async function POST(req: NextRequest) {
 
     try {
         const release = await getLatestRelease(REPO_OWNER, REPO_NAME);
-        if (!release) return NextResponse.json({ status: false, message: "Could not fetch release", error: "Could not fetch release" });
+        if (!release) {
+            return NextResponse.json({ status: true, message: "No published update is currently available", data: null });
+        }
 
         const version = release.tag_name;
         const title = `New Update Available: ${version}`;

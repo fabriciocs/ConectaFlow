@@ -17,8 +17,9 @@ export function OAuthSessionSelector({ sessions }: { sessions: SessionOption[] }
       {sessions.map((item) => {
         const isSelected = selected[item.id] === true;
         return (
-          <label key={item.id} className="flex items-center gap-2 text-sm">
+          <div key={item.id} className="flex items-center gap-2 text-sm">
             <input
+              id={`oauth-session-${item.id}`}
               type="checkbox"
               name="sessionIds"
               value={item.id}
@@ -26,20 +27,22 @@ export function OAuthSessionSelector({ sessions }: { sessions: SessionOption[] }
               checked={isSelected}
               onChange={(event) => setSelected((current) => ({ ...current, [item.id]: event.target.checked }))}
             />
-            <span>{item.name} <span className="text-muted-foreground">({item.sessionId})</span></span>
+            <label htmlFor={`oauth-session-${item.id}`} className="min-w-0 flex-1">
+              {item.name} <span className="text-muted-foreground">({item.sessionId})</span>
+            </label>
             <select
               name={isSelected ? `sessionCapability-${item.id}` : undefined}
               value={capabilities[item.id] ?? "READ"}
               form="oauth-consent"
               disabled={!isSelected}
               onChange={(event) => setCapabilities((current) => ({ ...current, [item.id]: event.target.value as "READ" | "WRITE" }))}
-              className="ml-auto rounded border bg-background px-2 py-1 text-xs"
+              className="shrink-0 rounded border bg-background px-2 py-1 text-xs"
               aria-label={`Access level for ${item.name}`}
             >
               <option value="READ">READ</option>
               <option value="WRITE">WRITE</option>
             </select>
-          </label>
+          </div>
         );
       })}
     </div>

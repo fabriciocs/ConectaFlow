@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { normalizeOutboundJid } from "@/lib/jid-utils";
 
 // POST: Check if number is on WhatsApp
 export async function POST(
@@ -44,7 +45,7 @@ export async function POST(
         const results = await Promise.all(
             numbers.map(async (number: string) => {
                 try {
-                    const checkResult = await instance.socket!.onWhatsApp(number);
+                    const checkResult = await instance.socket!.onWhatsApp(normalizeOutboundJid(number));
                     // onWhatsApp returns array of results
                     const result = Array.isArray(checkResult) && checkResult.length > 0 ? checkResult[0] : null;
                     return {

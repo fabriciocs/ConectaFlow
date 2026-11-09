@@ -74,7 +74,7 @@ export default async function PublicDocsPage() {
                 <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-2 min-w-0">
                         <div className="flex items-center gap-2 min-w-0" aria-label={brand.name}>
-                            <BrandMark className="h-7 w-7 rounded-lg" />
+                            <BrandMark homeLink className="h-7 w-7 rounded-lg" />
                             <span className="text-lg sm:text-xl font-bold tracking-tight truncate">{brand.name}</span>
                         </div>
                         <span className="px-2.5 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-semibold tracking-wide border border-primary/20 shrink-0">

@@ -108,7 +108,7 @@ function LoginForm() {
 
       <div className="relative z-10 w-full max-w-md p-4 animate-in fade-in zoom-in-95 duration-500">
         <div className="flex flex-col items-center mb-8">
-          <BrandMark className="mb-4" />
+          <BrandMark homeLink className="mb-4" />
           <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('login.title')}</h1>
           <p className="text-muted-foreground mt-2">{t('login.subtitle', { appName: brand.name })}</p>
         </div>

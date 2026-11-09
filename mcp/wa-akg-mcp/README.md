@@ -22,7 +22,7 @@ Write tools are exposed only when the OAuth grant explicitly gives the selected 
 
 MCP authentication never creates a WhatsApp session implicitly. The user must create and start a session in the dashboard, then select it in the OAuth consent screen. A write-capable MCP grant may call the explicit session-creation tool only when that operation was granted.
 
-Request bodies are limited to 1 MiB. Tool API calls have bounded timeouts and response sizes; redirects are rejected. API targets are loopback-only by default. Remote targets require HTTPS and an explicit `WA_AKG_MCP_ALLOW_REMOTE_API=true` setting. OAuth bearer tokens must never be written to logs.
+For multipart upload operations, MCP clients pass `body.fileBase64`, `body.fileName`, and `body.mimeType` as JSON tool arguments. The adapter validates the Base64 and builds the required multipart boundary before calling WA-AKG. Media uploads are capped at 16 MiB per file; `WA_AKG_MEDIA_TIMEOUT_MS` controls their timeout (default 120 seconds, maximum 300 seconds). Other tool requests retain bounded timeouts and response sizes; redirects are rejected. API targets are loopback-only by default. Remote targets require HTTPS and an explicit `WA_AKG_MCP_ALLOW_REMOTE_API=true` setting. OAuth bearer tokens and file contents must never be written to logs.
 
 MCP transport sessions live in process memory, expire after 30 minutes idle and are limited to 500 active sessions per process. After a restart, clients initialize a new transport session. OAuth grants and refresh tokens remain persistent in Prisma.
 

@@ -43,7 +43,7 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
   return (
     <main className="mx-auto w-full max-w-xl px-6 py-12" aria-labelledby="oauth-consent-title">
       <section className="rounded-xl border bg-card p-6 shadow-sm">
-        <div className="mb-6 flex items-center gap-3"><BrandMark className="h-10 w-10 rounded-xl text-sm" /><span className="font-semibold">{brand.name}</span></div>
+        <div className="mb-6 flex items-center gap-3"><BrandMark homeLink className="h-10 w-10 rounded-xl text-sm" /><span className="font-semibold">{brand.name}</span></div>
         <p className="text-sm text-muted-foreground">{t("eyebrow")}</p>
         <h1 id="oauth-consent-title" className="mt-2 text-2xl font-semibold">{t("allowClient", { name: authorization.client.name })}</h1>
         {authorization.client.description && <p className="mt-2 text-sm text-muted-foreground">{authorization.client.description}</p>}

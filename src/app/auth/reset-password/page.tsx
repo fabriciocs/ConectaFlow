@@ -48,7 +48,7 @@ function ResetPasswordForm() {
       <div className="absolute right-4 top-4"><LanguageSwitcher /></div>
       <div className="w-full max-w-md space-y-6">
         <div className="flex flex-col items-center gap-4 text-center">
-          <BrandMark />
+          <BrandMark homeLink />
           <h1 className="text-3xl font-bold">{t('recovery.resetTitle')}</h1>
         </div>
         <div className="glass-panel space-y-5 rounded-3xl p-8">

@@ -41,7 +41,7 @@ export default function ForgotPasswordPage() {
       <div className="absolute right-4 top-4"><LanguageSwitcher /></div>
       <div className="w-full max-w-md space-y-6">
         <div className="flex flex-col items-center gap-4 text-center">
-          <BrandMark />
+          <BrandMark homeLink />
           <h1 className="text-3xl font-bold">{t('recovery.title')}</h1>
           <p className="text-muted-foreground">{t('recovery.description')}</p>
         </div>

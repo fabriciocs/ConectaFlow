@@ -3,7 +3,6 @@ import { loadEnvConfig } from "@next/env";
 loadEnvConfig(process.cwd());
 
 import { createServer } from "http";
-import { parse } from "url";
 import next from "next";
 import { Server } from "socket.io";
 import { setupSocket } from "./socket";
@@ -69,16 +68,35 @@ app.prepare().then(async () => {
   }
 
   const server = createServer(async (req, res) => {
+    let requestPath = "/";
     try {
       if (!req.url) return;
-      const parsedUrl = parse(req.url, true);
+      const requestUrl = new URL(req.url, "http://localhost");
+      requestPath = requestUrl.pathname;
+      const query: Record<string, string | string[]> = Object.create(null);
+      requestUrl.searchParams.forEach((value, key) => {
+        const existing = query[key];
+        query[key] = existing === undefined
+          ? value
+          : Array.isArray(existing)
+            ? [...existing, value]
+            : [existing, value];
+      });
+      const parsedUrl = { pathname: requestUrl.pathname, query };
       if (handleMcpHttp && (parsedUrl.pathname === mcpEndpointPath || parsedUrl.pathname === `${mcpEndpointPath}/`)) {
         await handleMcpHttp(req, res);
         return;
       }
       await handle(req, res, parsedUrl);
     } catch (err) {
-      logger.error("Server", "Error handling", req.url, err);
+      const disconnected = req.aborted || res.destroyed || res.writableEnded ||
+        (err instanceof Error && (err.name === "AbortError" || err.message === "aborted"));
+      if (disconnected) {
+        logger.debug("Server", `Client disconnected before response: ${req.method} ${requestPath}`);
+        return;
+      }
+      logger.error("Server", "Error handling", req.method, requestPath, err);
+      if (res.destroyed || res.writableEnded) return;
       res.statusCode = 500;
       res.end("internal server error");
     }

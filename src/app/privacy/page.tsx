@@ -27,7 +27,7 @@ export default async function PrivacyPage() {
             <div className="container max-w-4xl px-4 mx-auto relative z-10">
 
                 <div className="flex items-center gap-2 mb-6 text-sm font-semibold text-foreground" aria-label={brand.name}>
-                    <BrandMark className="h-8 w-8 rounded-xl" />
+                    <BrandMark homeLink className="h-8 w-8 rounded-xl" />
                     <span>{brand.name}</span>
                 </div>
 

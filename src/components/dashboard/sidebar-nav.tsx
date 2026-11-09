@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "@/components/app-link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -110,6 +110,10 @@ export const navGroups: NavGroup[] = [
     },
 ];
 
+const subscribeToHydration = () => () => {};
+const getHydratedSnapshot = () => true;
+const getServerSnapshot = () => false;
+
 export function SidebarNav() {
     const pathname = usePathname();
     const { data: session } = useSession();
@@ -119,12 +123,20 @@ export function SidebarNav() {
 
     // Track collapsed groups — all expanded by default
     const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+    const hydrated = useSyncExternalStore(
+        subscribeToHydration,
+        getHydratedSnapshot,
+        getServerSnapshot,
+    );
 
     const toggleGroup = (key: string) => {
         setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
     };
 
     const isActive = (href: string) => {
+        // Rewrites and reverse-proxy base paths can make the server pathname
+        // differ from the browser pathname during hydration.
+        if (!hydrated || !pathname) return false;
         if (href === "/dashboard") return pathname === "/dashboard";
         return pathname.startsWith(href);
     };

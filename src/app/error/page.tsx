@@ -102,7 +102,7 @@ function ErrorContent() {
         {/* Decorative Icon */}
         <div className={`relative w-24 h-24 ${colorMap.bgSoft} ${colorMap.text} rounded-full flex items-center justify-center mb-8 ring-8 ${colorMap.ring}`} suppressHydrationWarning>
           <div className="flex flex-col items-center gap-4">
-            <BrandMark className="h-12 w-12 rounded-xl text-sm" />
+            <BrandMark homeLink className="h-12 w-12 rounded-xl text-sm" />
             {config.icon}
           </div>
         </div>

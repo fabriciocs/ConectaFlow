@@ -14,6 +14,7 @@ import { syncGroups } from "./store/groups";
 import { bindContactSync } from "./store/contacts";
 import { bindAutoReply } from "./store/autoreply";
 import { antispam } from "./antispam";
+import { normalizeOutboundJid } from "@/lib/jid-utils";
 import { logger } from "@/lib/logger";
 import { isInteractiveContent, handleInteractiveMessageDispatch } from "./interactive";
 import { normalizeWhatsAppPhone } from "@/lib/whatsapp-phone";
@@ -119,7 +120,7 @@ export class WhatsAppInstance {
             return meta?.id || null;
         };
         currentSocket.checkWhatsApp = async (target: string) => {
-            return await currentSocket.onWhatsApp(target);
+            return await currentSocket.onWhatsApp(normalizeOutboundJid(target));
         };
 
         // Apply Anti-Spam & Interactive Message Wrapper to sendMessage
@@ -127,7 +128,8 @@ export class WhatsAppInstance {
         const sessionId = this.sessionId;
         const sock = this.socket;
         const sendMessage: WASocket["sendMessage"] = async (jid, content, options) => {
-            return antispam.enqueue(sessionId, jid, content, async () => {
+            const normalizedJid = normalizeOutboundJid(jid);
+            return antispam.enqueue(sessionId, normalizedJid, content, async () => {
                 if (this.isStopped || this.socket !== sock || generation !== this.generation) {
                     throw new Error("WhatsApp session is no longer active");
                 }
@@ -137,10 +139,10 @@ export class WhatsAppInstance {
                 });
                 if (!current) throw new Error("WhatsApp session tenant binding is invalid");
                 if (isInteractiveContent(content)) {
-                    const interactiveMsg = await handleInteractiveMessageDispatch(sock, jid, content, options);
+                    const interactiveMsg = await handleInteractiveMessageDispatch(sock, normalizedJid, content, options);
                     if (interactiveMsg) return interactiveMsg;
                 }
-                return originalSendMessage(jid, content, options);
+                return originalSendMessage(normalizedJid, content, options);
             });
         };
         this.socket.sendMessage = sendMessage;

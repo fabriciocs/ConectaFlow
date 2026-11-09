@@ -152,11 +152,29 @@ export async function dispatchWebhook(
             return;
         }
 
+        // The store creates receipts from the original Baileys message, while
+        // onMessageReceived later dispatches a normalized payload. Its freshly
+        // calculated eventId can therefore differ from the persisted receipt.
+        // Keep all delivery state transitions and the outgoing contract tied
+        // to the receipt that was actually read or created.
+        const receiptEventId = receipt.event.eventId;
+
         if (receipt.conflict) {
-            logger.error("Webhook", `Inbound event conflict for ${payload.eventId}`);
+            logger.error("Webhook", `Inbound event conflict for ${receiptEventId}`);
             return;
         }
         if (!receipt.created) return;
+
+        payload.eventId = receiptEventId;
+        if (isRecord(receipt.event.payload)) {
+            const persistedPayload = receipt.event.payload;
+            if (typeof persistedPayload.correlationId === "string") {
+                payload.correlationId = persistedPayload.correlationId;
+            }
+            if (typeof persistedPayload.originalMessageId === "string") {
+                payload.originalMessageId = persistedPayload.originalMessageId;
+            }
+        }
 
         const webhooks = await prisma.webhook.findMany({
             where: {
@@ -192,19 +210,19 @@ export async function dispatchWebhook(
         }
 
         if (deliveries.length === 0) {
-            await markInboundEventCompleted(payload.eventId, tenantId);
+            await markInboundEventCompleted(receiptEventId, tenantId);
             return;
         }
 
-        await markInboundEventQueued(payload.eventId, tenantId);
+        await markInboundEventQueued(receiptEventId, tenantId);
         const results = await Promise.allSettled(deliveries);
         const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failures.length > 0) {
             const reason = failures[0]?.reason instanceof Error ? failures[0].reason.message : "Webhook delivery failed";
-            await markInboundEventFailed(payload.eventId, tenantId, reason);
-            logger.error("Webhook", `Inbound event ${payload.eventId} failed for ${failures.length} delivery(ies)`);
+            await markInboundEventFailed(receiptEventId, tenantId, reason);
+            logger.error("Webhook", `Inbound event ${receiptEventId} failed for ${failures.length} delivery(ies)`);
         } else {
-            await markInboundEventCompleted(payload.eventId, tenantId);
+            await markInboundEventCompleted(receiptEventId, tenantId);
         }
     } catch (error) {
         logger.error("Webhook", "Dispatch error:", error);

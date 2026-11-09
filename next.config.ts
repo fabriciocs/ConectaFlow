@@ -4,7 +4,23 @@ import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
+function getConfiguredDevOriginHosts(): string[] {
+  const hosts = new Set<string>();
+  for (const configuredUrl of [process.env.BASE_URL, process.env.NEXTAUTH_URL]) {
+    if (!configuredUrl) continue;
+    try {
+      const url = new URL(configuredUrl);
+      if (url.protocol === "http:" || url.protocol === "https:") hosts.add(url.hostname);
+    } catch {
+      // Invalid optional origin configuration is ignored here and validated by its owning feature.
+    }
+  }
+  return [...hosts];
+}
+
 const nextConfig: NextConfig = {
+  // Permit the configured public host to reach Next's dev-only HMR endpoint through the proxy.
+  allowedDevOrigins: process.env.NODE_ENV === "development" ? getConfiguredDevOriginHosts() : undefined,
   async headers() {
     return [{
       source: "/:path*",
