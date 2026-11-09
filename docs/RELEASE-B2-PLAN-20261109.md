@@ -30,7 +30,7 @@ Estado: **IMPLEMENTED (preparação)**; integração funcional **BLOCKED**; rele
 - Comparação `main...upstream/main`: 13 commits exclusivos do fork, 2 exclusivos do upstream.
 - Os 2 commits upstream modificam apenas `.github/FUNDING.yml` (financiamento do autor original) e `README.md` (badge de divulgação do repositório original).
 - Não substituir links de financiamento, identidade pública, configurações de segurança ou alterações privadas do fork por valores do upstream. Revisar cada atualização upstream antes de integrá-la.
-- O fetch **não é merge**: o histórico de `main` e a árvore de trabalho permaneceram intocados.
+- O fetch não altera a árvore de trabalho. Após a comparação, foi criado somente na candidata B2 o merge `86c6a462` (pais: `7a636d23` e `04d6c0f5`), com estratégia `ours` deliberada: incorpora a ancestralidade upstream sem importar o financiamento nem o badge de publicidade alheios ao fork. O diff de conteúdo deste merge tem **zero arquivos**, e a `main` permaneceu intacta.
 - O script `scripts/Sync-Fork-B2.ps1` implementa Audit/Fetch/Prepare/Check de forma explícita; **não** faz push, merge, release, deploy, backup real ou migração automaticamente.
 
 ## Execução recomendada — Windows PowerShell 5.1
@@ -51,7 +51,7 @@ powershell.exe -NoProfile -File .\scripts\Sync-Fork-B2.ps1 -Mode Check
 | --- | --- | --- |
 | G01 Referência | Confirmar qual tag/commit/release corresponde a B1 | **BLOCKED**: identificador B1 ambíguo |
 | G02 Baseline | Inventariar branches, commits locais, staged/unstaged/untracked e worktrees | **VERIFIED** no inventário inicial; revalidar antes da integração |
-| G03 Fork | Fetch e comparação upstream sem perda de customizações | **VERIFIED** para fetch; merge ainda não realizado |
+| G03 Fork | Fetch e comparação upstream sem perda de customizações | **VERIFIED** para fetch e merge apenas na candidata B2 (`86c6a462`); `main` não sincronizada |
 | G04 Segurança | R01–R15 com aceitação e ausência de regressões | **BLOCKED**: R15 marcado NO-GO em documentação existente |
 | G05 Prisma | Bootstrap em banco novo, trilhas V1, reconciliação de P3018, backup/restore testados | **BLOCKED** até ensaio restaurável e validação de histórico |
 | G06 Tenancy | Autenticação/autorização, API keys, sessão, QR, OAuth, MFA e isolamento entre tenants | **NOT_VERIFIED** como integração global |
@@ -81,7 +81,7 @@ A ordem é G01–G09 → revisão independente → G10. Falha em um gate mandat�
 - Rollback da aplicação deve utilizar a versão anterior imutável e backup restaurável. Nunca desfazer migração com perda de dados sem procedimento aprovado.
 - A integração upstream deve preservar conteúdos próprios do fork; `git pull` indiscriminado ou sincronização automática de branch protegida não é um mecanismo de upgrade aceitável.
 - Não criar GitHub Actions/Workflows. Todos os comandos são locais, deliberados e auditáveis.
-- Nenhuma release/tag B2, merge em `main`, push ou deploy foi executado ao criar este documento.
+- Não houve release/tag B2, merge em `main`, push nem deploy. Houve apenas merge de ancestralidade upstream na branch candidata, sem mudança de conteúdo.
 
 ## Evidências de origem
 
