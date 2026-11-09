@@ -1,6 +1,17 @@
 # B2 — integração controlada e atualização segura (2026-11-09)
 
-Estado: **IMPLEMENTED (preparação)**; integração funcional **BLOCKED**; release pública **NO-GO**.
+Estado: **IMPLEMENTED (preparação e especificação)**; integração funcional **BLOCKED**; release pública **NO-GO**.
+
+### Dossiê atualizado de conclusão B2
+
+- [01 — Especificação mestra, arquitetura, fases e passos F00–F14](B2/01-ESPECIFICACAO-MESTRA.md).
+- [02 — Ferramentas, plugins, skills, agentes e responsabilidades](B2/02-FERRAMENTAS-PLUGINS-SKILLS.md).
+- [03 — Runbook de pull, sincronização, validação, upgrade e rollback](B2/03-UPGRADE-AND-SYNC-RUNBOOK.md).
+- [04 — Estrutura de arquivos, contratos, módulos e gates](B2/04-ARQUIVOS-CONTRATOS-GATES.md).
+- [05 — Registro de gates, decisões, evidências e bloqueios](B2/05-GATE-TRACKER.md).
+- [06 — Release notes B2 em rascunho, sem publicação](B2/06-RELEASE-NOTES-DRAFT.md).
+
+Atualização do inventário: fetch de todos os remotos e tags e pull --ff-only da candidata B2 verificados; quatro worktrees de segurança reparados após mudança do nome do diretório principal. Nenhum patch foi descartado. Existem alterações locais não integradas em OAuth, QR, dependências, interface e integração geral. A candidata B2 ainda não inclui o bootstrap V2 presente na branch de autenticação; esta lacuna é gate de integração, não falha a ser ignorada.
 
 ## Identidade e referência
 
@@ -15,7 +26,7 @@ Estado: **IMPLEMENTED (preparação)**; integração funcional **BLOCKED**; rele
 ## Baseline Git e alterações que devem ser preservadas
 
 - `main`: `e793659` (protegida).
-- `codex/auth-whatsapp-identity-linking-20261108`: `f25fcef` (17 commits à frente da main).
+- `codex/auth-whatsapp-identity-linking-20261108`: `a6496f7` (18 commits à frente da main no inventário atualizado; ainda fora da candidata B2).
 - `feature/security-remediation-20261106`: `5b9ddfe` (13 commits à frente).
 - `feature/multi-tenant-isolation-20261103`: `7d804ba`.
 - `integration/wa-akg-main-20261104`: `6700154` (3 commits exclusivos em comparação à branch de autenticação).

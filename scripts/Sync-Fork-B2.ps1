@@ -126,12 +126,21 @@ try {
             $logRoot = Join-Path $env:LOCALAPPDATA ('ConectaFlow\B2\checks-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
             [void](New-Item -ItemType Directory -Path $logRoot -Force)
             $passed = $true
+            $package = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'package.json') -Raw | ConvertFrom-Json
+            $bootstrapScript = @($package.scripts.PSObject.Properties.Name) -contains 'db:bootstrap:v2:test'
+            $bootstrapSource = Test-Path -LiteralPath (Join-Path $script:RepoRoot 'scripts/prisma-bootstrap-v2.mjs')
+            $bootstrapManifest = Test-Path -LiteralPath (Join-Path $script:RepoRoot 'prisma/bootstrap-v2/manifest.json')
+            $bootstrapReady = $bootstrapScript -and $bootstrapSource -and $bootstrapManifest
             $checks = @(
-                @{ Name='prisma-bootstrap'; Exe='npm.cmd'; Args=@('run', 'db:bootstrap:v2:test') },
                 @{ Name='unit'; Exe='npm.cmd'; Args=@('test') },
                 @{ Name='typecheck'; Exe='node.exe'; Args=@('node_modules/typescript/bin/tsc', '--noEmit') },
                 @{ Name='lint'; Exe='npm.cmd'; Args=@('run', 'lint') }
             )
+            if ($bootstrapReady) {
+                $checks = @(@{ Name='prisma-bootstrap'; Exe='npm.cmd'; Args=@('run', 'db:bootstrap:v2:test') }) + $checks
+            } else {
+                Write-Output 'GATE=PRISMA_BOOTSTRAP_V2;STATUS=BLOCKED;CAUSE=MISSING_IN_CURRENT_BRANCH'
+            }
             if ($IncludeBuild) {
                 $checks += @{ Name='build'; Exe='npm.cmd'; Args=@('run', 'build') }
             }
@@ -143,6 +152,10 @@ try {
             if (-not $passed) {
                 Write-Output ('STATUS=FAILED;MODE=Check;LOG_DIR=' + $logRoot)
                 exit 25
+            }
+            if (-not $bootstrapReady) {
+                Write-Output ('STATUS=PARTIAL;MODE=Check;CHECKS_PASSED=' + $checks.Count + ';BLOCKED_GATE=PRISMA_BOOTSTRAP_V2;LIVE_DB_VALIDATED=false;PRODUCTION_READY=false')
+                exit 26
             }
             Write-Output ('STATUS=TESTED;MODE=Check;CHECKS=' + $checks.Count + ';LIVE_DB_VALIDATED=false;PRODUCTION_READY=false')
         }
