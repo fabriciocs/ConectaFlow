@@ -1,5 +1,7 @@
 # 🔄 WA-AKG Update Guide
 
+> **ConectaFlow B2 (candidata, NO-GO para publicação):** consulte primeiro [o plano de integração e upgrade B2](RELEASE-B2-PLAN-20261109.md) e use `scripts/Sync-Fork-B2.ps1` para auditoria e fetch controlado. O procedimento histórico de `git pull` e `./start.sh` abaixo **não foi validado** para upgrade B2 e não deve ser executado automaticamente sobre banco ou serviço com dados reais.
+
 Keep your **WA-AKG** instance up-to-date with the latest features, security patches, and performance improvements.
 
 ---
