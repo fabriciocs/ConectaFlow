@@ -2,7 +2,7 @@
 command = "node"
 args = ["mcp/wa-akg-mcp/src/server.mjs"]
 cwd = "C:\\repos\\WA-AKG"
-enabled = true
+enabled = false
 required = false
 default_tools_approval_mode = "prompt"
 enabled_tools = [
