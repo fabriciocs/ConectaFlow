@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../home/evomenu/backups"
+		},
+		{
+			"path": "../../tmp/system-backup-staging"
+		},
+		{
+			"path": "../../home/evomenu/system-backups"
+		}
+	],
+	"settings": {}
+}
