@@ -47,3 +47,11 @@ next-env.d.ts
 /public/media/*
 server.log
 /logs/
+
+# Security: operational backup material and private age identities never belong in Git
+/backups/
+**/.age-backup-key
+*.agekey
+*.age-identity
+*.age-private-key
+**/backup-audit.log
