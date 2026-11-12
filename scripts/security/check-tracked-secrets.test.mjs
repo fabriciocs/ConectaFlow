@@ -7,6 +7,8 @@ test("rejects tracked private age identities, backup runtime state and credentia
     "backups/.age-backup-key",
     "backups/backup-audit.log",
     "backups/.backup.lock",
+    "backups/new-snapshot.tar.gz.age",
+    "exports/encrypted.age",
     "backups/.backup-control/state",
     ".env",
     "mcp/.env.production",
