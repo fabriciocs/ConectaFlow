@@ -55,10 +55,13 @@ Fontes técnicas:
 
 ## 6. Comandos de verificação sem acessar segredos
 
+Há dois verificadores complementares: o de release V2, integrado ao `doctor`, e o mais abrangente em `scripts/security/`, que detecta também padrões de token. Nenhum desses verificadores analisa o histórico Git.
+
 No checkout V2 atualizado, com Node >=22 e Git disponíveis:
 
 ```sh
 node scripts/release-v2/check-sensitive-tracked-files.mjs
+node scripts/security/check-tracked-secrets.mjs
 node scripts/release-v2/upgrade.mjs doctor
 ```
 
