@@ -51,6 +51,7 @@ export function checkTrackedFiles(root = OWN_ROOT) {
   const findings = [];
   let checked = 0;
   let omitted = 0;
+  let unavailable = 0;
   for (const name of entries.paths) {
     const normalized = name.replaceAll("\\", "/");
     const absolute = resolve(directory, name);
@@ -66,7 +67,7 @@ export function checkTrackedFiles(root = OWN_ROOT) {
     try {
       meta = lstatSync(absolute);
     } catch {
-      omitted += 1;
+      unavailable += 1;
       continue;
     }
     if (!meta.isFile()) {
@@ -81,7 +82,7 @@ export function checkTrackedFiles(root = OWN_ROOT) {
     try {
       data = readFileSync(absolute);
     } catch {
-      omitted += 1;
+      unavailable += 1;
       continue;
     }
     if (data.includes(0)) {
@@ -95,7 +96,7 @@ export function checkTrackedFiles(root = OWN_ROOT) {
       findings.push({ path: normalized, reason: "POSSIBLE_PRIVATE_KEY_CONTENT" });
     }
   }
-  return { status: findings.length > 0 ? "FAILED" : omitted > 0 ? "PARTIAL" : "PASS", checked, omitted, findings };
+  return { status: findings.length > 0 ? "FAILED" : unavailable > 0 ? "BLOCKED" : "PASS", checked, omitted, unavailable, findings };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -106,11 +107,12 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const result = checkTrackedFiles();
     process.stdout.write("STATUS=" + result.status + "\n");
     process.stdout.write("TRACKED_TEXT_CHECKED=" + result.checked + "\n");
-    process.stdout.write("FILES_NOT_INSPECTED=" + result.omitted + "\n");
+    process.stdout.write("NON_TEXT_OR_UNSUPPORTED_FILES=" + result.omitted + "\n");
+    process.stdout.write("UNAVAILABLE_TRACKED_FILES=" + (result.unavailable ?? 0) + "\n");
     process.stdout.write("FINDING_COUNT=" + result.findings.length + "\n");
     for (const item of result.findings) {
       process.stdout.write("FINDING=" + item.reason + ":" + item.path + "\n");
     }
-    process.exitCode = result.status === "PASS" ? 0 : result.status === "PARTIAL" ? 2 : 3;
+    process.exitCode = result.status === "PASS" ? 0 : result.status === "BLOCKED" ? 2 : 3;
   }
 }
