@@ -10,7 +10,7 @@ Data de inspeção: 2026-11-11. Repositório: `fabriciocs/ConectaFlow`. Baseline
 | Criação da branch V2 a partir do SHA exato da V1 | IMPLEMENTED | Sem force-push, sem mudar V1 ou main |
 | Especificação de upgrade, preflight e rollback | IMPLEMENTED | `docs/release-v2/PROD-V1-TO-PROD-V2-UPGRADE-SPEC.md` |
 | CLI cross-platform read-only | IMPLEMENTED / NOT TESTED | `scripts/release-v2/upgrade.mjs`, apenas doctor/plan/status/help |
-| Merge `main` na V2 | BLOCKED | Divergência de 2 commits exclusivos V1, incluindo arquivos com nomes de credencial no histórico |
+| Merge `main` na V2 | BLOCKED | Divergência de 2 commits exclusivos V1, incluindo arquivos com chave privada age confirmada no histórico público |
 | Merge `auth` (incorpora `security` e `tenant`) | BLOCKED | Falhas/ausência de testes integrados no SHA atual e gate R15 |
 | Merge `B2` na V2 | DEFERRED | PR #2 é draft; seis commits documentais e gate geral NO-GO |
 | Captura de trabalhos locais não publicados | BLOCKED | GitHub não acessa staged/unstaged/untracked dos computadores |
@@ -29,7 +29,7 @@ Assim, a integração de `auth` contém, por ancestralidade Git, as alterações
 
 ## V1 exclusiva (12 caminhos no diff reverso, 2 commits)
 
-- Backups: workspace/configuração, arquivo com nome de chave, estado, lock, log de auditoria e script de backup. **QUARENTENA/SEGURANÇA P0**; examinar apenas classificações/hashes em ambiente autorizado; nunca usar chave publicada como segredo confiável.
+- Backups: workspace/configuração, arquivo com nome de chave, estado, lock, log de auditoria e script de backup. **SEGURANÇA P0 CONFIRMADA:** foi observada chave privada age em commit público. Tratar como comprometida, rotacionar e recriptografar backups pertinentes em processo controlado; não reproduzir o valor. Excluir do HEAD não limpa o histórico. Examinar somente classificações/hashes em ambiente autorizado.
 - Infraestrutura: `deploy/nginx/wa-evomenu.conf`, `ecosystem.config.js`, `start.sh`, `scripts/enable-remote-access.sh` e `scripts/expose-database-subdomains.sh`. Requerem revisão individual de permissões, exposição de portas, compatibilidade com Caddy e serviço operacional antes de incorporar.
 - A presença histórica de arquivos de backup e rede não constitui justificativa para manter acessos remotos ou publicar dados privados.
 
@@ -64,3 +64,18 @@ node scripts/release-v2/upgrade.mjs plan
 ```
 
 O comando **não realiza upgrade** nesta fase. `upgrade`/`resume`/`rollback` terminam com `BLOCKED_NOT_IMPLEMENTED` e exit 20. Isso impede uma atualização insegura enquanto faltam manifesto, backups restaurados, reconciliação Prisma e gates.
+
+## PRs de integração registrados (não mesclados)
+
+- [PR #3 — main → release/prod-v2](https://github.com/fabriciocs/ConectaFlow/pull/3), DRAFT / BLOCKED.
+- [PR #4 — auth (inclui security/tenant) → release/prod-v2](https://github.com/fabriciocs/ConectaFlow/pull/4), DRAFT / BLOCKED.
+- [PR #5 — B2 → release/prod-v2](https://github.com/fabriciocs/ConectaFlow/pull/5), DRAFT / DEFERRED.
+
+GitHub reportou mergeability=true para os três PRs no snapshot desta inspeção, **apenas** como ausência de conflito Git detectado. Isso não aprova segurança, funcionalidade, privacidade ou rollout.
+
+## Verificação do CLI nesta rodada
+
+- Conteúdo de `upgrade.mjs` e `upgrade.test.mjs` confirmado na branch por blob SHA do GitHub.
+- Corpo JavaScript inspecionado por parser depois de remover as diretivas de importação ESM para avaliação estática: PASS. **Não** substitui `node --check` nem `node --test`.
+- Testes versionados em `scripts/release-v2/upgrade.test.mjs` para fail-closed, status NO-GO e não exposição de valores de credenciais. Não executados em Node nesta rodada, pois o GitHub connector não oferece execução de comandos e a recuperação de arquivos pelo ambiente efêmero de testes não estava disponível.
+- Release publicada, code merge, upgrade real e testes de banco/HTTP: NÃO EXECUTADOS.
