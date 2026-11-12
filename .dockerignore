@@ -41,3 +41,13 @@ Thumbs.db
 .vscode
 *.swp
 *.swo
+
+# Security: never package operational backups, encryption identities or runtime logs
+backups
+**/.age-backup-key
+**/*.agekey
+**/*.age-identity
+**/*.age-private-key
+**/backup-audit.log
+**/.backup-control
+**/.backup.lock
