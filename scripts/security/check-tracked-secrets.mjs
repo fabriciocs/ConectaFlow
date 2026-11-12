@@ -15,7 +15,9 @@ const MAX_BYTES = 4 * 1024 * 1024;
 
 export function forbiddenPath(name) {
   const p = name.replaceAll("\\", "/");
-  return /(^|\/)\.age-backup-key$/i.test(p)
+  return /^backups\//i.test(p)
+    || /\.age$/i.test(p)
+    || /(^|\/)\.age-backup-key$/i.test(p)
     || /(^|\/)(?:id_rsa|id_ed25519|id_ecdsa)$/i.test(p)
     || /(^|\/)\.env(?:\.[^/]*)?$/i.test(p) && !/\.env\.example$/i.test(p)
     || /(^|\/)\.ssh\//i.test(p)
