@@ -79,3 +79,15 @@ GitHub reportou mergeability=true para os três PRs no snapshot desta inspeção
 - Corpo JavaScript inspecionado por parser depois de remover as diretivas de importação ESM para avaliação estática: PASS. **Não** substitui `node --check` nem `node --test`.
 - Testes versionados em `scripts/release-v2/upgrade.test.mjs` para fail-closed, status NO-GO e não exposição de valores de credenciais. Não executados em Node nesta rodada, pois o GitHub connector não oferece execução de comandos e a recuperação de arquivos pelo ambiente efêmero de testes não estava disponível.
 - Release publicada, code merge, upgrade real e testes de banco/HTTP: NÃO EXECUTADOS.
+
+## Contenção P0 posterior ao inventário inicial — 2026-11-11
+
+- VERIFIED por inspeção GitHub: `release/prod-v1` `dcc263e4` e `release/prod-v2` `9f955b26` não mantêm `backups/.age-backup-key` no HEAD. O diretório `backups/` inteiro foi excluído nesses commits concorrentes.
+- IMPLEMENTED: `.gitignore` existente na V2 ignora identidades e backups; `.dockerignore` exclui esses arquivos do contexto de build.
+- IMPLEMENTED: detector `scripts/security/check-tracked-secrets.mjs` e testes sintéticos `scripts/security/check-tracked-secrets.test.mjs` publicados; regras puras verificadas em ambiente V8 com 9/9 casos de caminhos e 3/3 casos de conteúdo sintético. Execução completa `node --test` ainda NOT VERIFIED.
+- IMPLEMENTED: [runbook P0 de rotação e histórico](SECURITY-P0-AGE-ROTATION-AND-HISTORY.md).
+- BLOCKED: utilização da chave em backups, rotação, recriptografia, prova de restauração e eventual revogação de PAT válido; não existe acesso demonstrado aos hosts/secret manager/armazenamento protegido.
+- DEFERRED: reescrita de histórico Git e caches, que requer autorização separada, congelamento e coordenação de clones/forks.
+- POSSIBLE REGRESSION: `backups/backup-system.sh` foi removido como parte da contenção; necessidade de restabelecer capacidade de backup por alternativa segura deve ser avaliada antes de upgrade.
+
+**Decisão:** P0 HEAD-CONTAINED / ROTATION-BLOCKED / HISTORICAL-EXPOSURE-OPEN. Não transformar em `VERIFIED` ou GO para produção sem comprovação da revogação e do restabelecimento de backups.
