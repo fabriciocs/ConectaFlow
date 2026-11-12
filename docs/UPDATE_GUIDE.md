@@ -1,103 +1,53 @@
-# 🔄 WA-AKG Update Guide
+# ConectaFlow — Atualização segura da V1 para a candidata Prod V2
 
-> **ConectaFlow B2 (candidata, NO-GO para publicação):** consulte primeiro [o plano de integração e upgrade B2](RELEASE-B2-PLAN-20261109.md) e a [especificação detalhada F00–F14](B2/01-ESPECIFICACAO-MESTRA.md); use `scripts/Sync-Fork-B2.ps1` para auditoria e fetch controlado. O procedimento histórico de `git pull` e `./start.sh` abaixo **não foi validado** para upgrade B2 e não deve ser executado automaticamente sobre banco ou serviço com dados reais.
+**Estado em 2026-11-11: INTEGRAÇÃO GIT CONCLUÍDA / DEPLOY NO-GO.** Este arquivo substitui instruções antigas que recomendavam executar `git pull`, `./start.sh` e `prisma db push` diretamente sobre um ambiente em produção.
 
-Keep your **WA-AKG** instance up-to-date with the latest features, security patches, and performance improvements.
+A branch `release/prod-v2` contém os históricos da `release/prod-v1`, `main`, multi-tenancy, segurança, autenticação e B2. **Não é uma release publicada** e o campo `version` do `package.json` ainda reflete a versão do código-fonte, não uma versão homologada Prod V2.
 
----
+## Comandos disponíveis (somente leitura)
 
-## 🚀 Standard Update Process
+No checkout da V2, com Node 22 ou superior:
 
-Follow these steps to update your application safely.
-
-### Configuration migration and reconfiguration
-
-After updating the source and dependencies, run the cross-platform configurator:
-
-```bash
-npm run setup
+```sh
+node scripts/release-v2/upgrade.mjs doctor
+node scripts/release-v2/upgrade.mjs plan
+node scripts/release-v2/upgrade.mjs status
+node scripts/security/check-tracked-secrets.mjs
 ```
 
-It detects the current configuration format. For an older format it preserves recognized values, asks for newly required settings, and writes a timestamped backup before changing the configuration. For a current format it offers to keep the values, configure again, or cancel. Cancel leaves the existing configuration untouched. Do not delete the backup until the updated instance has been validated.
+Esses comandos não migrarão dados nem instalarão ou reiniciarão serviços. O resultado de `doctor` é um diagnóstico **estático e incompleto**, sem teste de HTTP, MySQL, autenticação, WhatsApp ou recuperação. Verifique também se o status Git está limpo e se existem worktrees ou patches locais antes de qualquer operação.
 
-### Option A: Automatic Update (Recommended)
-If you are deploying with PM2 or another existing process supervisor and using the built-in `start.sh` script, updating is as simple as:
-```bash
-git pull
-./start.sh
-```
-This script will automatically pull the environment, install any new dependencies, sync the Prisma database schema, build Next.js assets, and safely reload the PM2 process without downtime.
+**Ainda não implementado:** `node scripts/release-v2/upgrade.mjs upgrade`, `resume` e `rollback`. Eles encerram de modo seguro com `BLOCKED_NOT_IMPLEMENTED` (exit 20). Não tratar isso como uma atualização executada.
 
----
+## Procedimento proposto para futura implantação autorizada
 
-### Option B: Manual Update Process
-If you prefer running commands manually:
+1. Identificar o exato commit/artefato V1 **instalado**, inventariar alterações staged/unstaged/untracked, infraestrutura, versões e módulos. Nunca substituir diretamente o checkout com alterações.
+2. Tratar o incidente [P0 da chave age](release-v2/INCIDENT-P0-AGE-KEY-20261111.md): rotação no ambiente autorizado, análise de backups afetados e teste de recriptografia/restauração. A chave antiga permanece no histórico Git.
+3. Confirmar artefato/manifesto V2 assinado, checksums, compatibilidade de Node, Prisma, MySQL e fluxos. Validar que o build não contém mídia privada ou credenciais.
+4. Fazer backup consistente e cifrado do banco, credenciais de sessão WhatsApp, mídia, configuração e agendamentos; comprovar restore em sandbox antes de migrar.
+5. Ensaio em cópia restaurada da V1: classificar histórico Prisma, verificar P3018/drift e diferenças do esquema, testar migrações aditivas e seus estados intermediários.
+6. Rodar TypeScript, lint, unit, MCP, build, segurança, OAuth/MFA/API keys, HTTP e isolamento entre dois tenants, OpenAPI, QR e leases.
+7. Ensaiar falhas, checkpoints, retomada e rollback/forward-fix preservando dados. Aprovar janela, responsáveis e critérios RTO/RPO.
+8. Somente após gates e autorização **separada** publicar manifesto/tag/release e executar upgrade controlado, observado e reversível.
 
-#### 1. Pull Latest Changes
-```bash
-git pull
-```
+Especificações: [V1 → V2](release-v2/PROD-V1-TO-PROD-V2-UPGRADE-SPEC.md), [integração](release-v2/INTEGRATION-REGISTER.md), [runbook B2](B2/03-UPGRADE-AND-SYNC-RUNBOOK.md), [gates B2](B2/05-GATE-TRACKER.md).
 
-#### 2. Update Dependencies
-```bash
-npm install
-```
+## Scripts históricos: V1 e risco de mutações
 
-#### 3. Sync Database Schema
-If the update includes database changes, run:
-```bash
-npm run db:push
-```
-> [!NOTE]
-> Do not run database schema changes blindly in production. Back up the database and follow the migration procedure in [Database Setup](DATABASE_SETUP.md). The configurator does not authorize destructive database resets.
+O `start.sh` original executava instalação de dependências, `prisma db push`, criação de conta administrativa e reinicialização de PM2. **Não é um comando de upgrade Prod V2.** Na candidata V2, há um bloqueio explícito `BLOCKED_LEGACY_UPGRADE_SCRIPT` antes de qualquer mutação. O arquivo histórico permanece na V1 e no histórico Git.
 
-#### 4. Build & Restart
-```bash
-# Build the optimized production bundle
-npm run build
+Não execute `npm run db:push`, `prisma migrate reset`, `git reset --hard`, `git clean`, rebase, restauração por cima de dados ativos, exclusão de volumes ou reinicialização de processos de terceiros para contornar os gates. Evite usar `npm install` em vez de `npm ci` durante a preparação, pois isso pode modificar o lockfile.
 
-# Restart your process using PM2
-pm2 restart wa-akg
-```
+O configurador `npm run setup` também altera arquivos de configuração e **não** faz parte do diagnóstico read-only; utilize somente com backup, operador autorizado e plano de reversão.
 
----
+## Segurança e configuração
 
-## 🏷️ Version Management
+- `.env` não deve ser publicado; somente nomes de variáveis podem integrar evidências públicas. Segredos nunca em `NEXT_PUBLIC_*`.
+- Uso de `Caddy`/`ngrok` deve respeitar o host e o caminho base autorizados; callbacks OAuth precisam validar origem e redirect.
+- O serviço PM2 legado `wa-evomenu`, suas rotas Nginx e scripts de exposição de portas dependem da instalação real; **não** habilitá-los por inferência.
+- O banco real pode ter históricos Prisma V1 distintos. A reconciliação de checksums de um sandbox não autoriza corrigir outros bancos automaticamente.
+- O scanner de credenciais cobre o HEAD verificado e **não** limpa segredos publicados em commits antigos.
 
-To manually bump your application version:
+## Critério de liberação
 
-1.  Open `package.json`.
-2.  Update the `"version"` field (e.g., `"1.1.1"` -> `"1.1.2"`).
-3.  Rebuild the application.
-
-The version number is displayed in the **Dashboard Sidebar** footer.
-
----
-
-## 🛠️ Troubleshooting Updates
-
-| Issue | Resolution |
-| :--- | :--- |
-| **Prisma Type Errors** | Run `npx prisma generate` to refresh the client. |
-| **Build Failures** | Delete `.next` and `node_modules`, then `npm install`. |
-| **API Errors** | Ensure your `.env` matches the latest requirements in `docs/ENVIRONMENT_VARIABLES.md`. |
-
----
-
-## 🔒 Security Changelog (v1.6.1)
-
-| Perubahan | Sebelum | Sesudah |
-| :--- | :--- | :--- |
-| **AUTH\_SECRET wajib** | Fallback ke `"secret"` jika tidak diset | Server exit dengan error jika tidak diset |
-| **Password plaintext fallback** | `bcrypt.compare() \|\| password === user.password` | Hanya `bcrypt.compare()` |
-| **Docker kredensial** | Hardcoded di `docker-compose.yml` | Dibaca dari `.env` file |
-| **GET /api/settings/system** | Tanpa autentikasi | Minimal login required |
-| **generateApiKey()** | `Math.random()` | Gunakan `crypto.randomBytes()` |
-
-> [!IMPORTANT]
-> Setelah update ke v1.6.1, pastikan `AUTH_SECRET` diset di `.env`. Jika menggunakan Docker, buat `.env` dari `.env.example` sebelum `docker compose up`.
-
----
-<div align="center">
-  **Version**: 1.6.1 | **Last Verified**: 2026-06-28
-</div>
+**RELEASE_GO** somente com as etapas R00–R12 e os gates de segurança, schema, tenant, OAuth, MCP, backups/restore e rollback **VERIFIED** no mesmo SHA do manifesto. Até lá: `release/prod-v2` = candidata integrada, não versão de produção pronta.
