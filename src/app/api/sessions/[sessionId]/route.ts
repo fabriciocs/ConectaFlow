@@ -18,12 +18,12 @@ export async function GET(
         const sessionId = resolvedParams.sessionId;
 
         // Verify access
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
+        const canAccess = await canAccessSession(user, request, sessionId);
         if (!canAccess) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }
 
-        const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+        const isOwner = await isSessionOwner(user, request, sessionId);
 
         // Get DB Session
         const session = await prisma.session.findUnique({
@@ -61,7 +61,7 @@ export async function GET(
             me = instance.socket.user;
         }
 
-        const safeSession = user.authMethod === "oauth"
+        const safeSession = user.authMethod !== "session"
             ? sanitizeOAuthReadSession(session)
             : sanitizeSessionWebhooks(isOwner ? session : sanitizeSharedSession(session));
 
@@ -74,7 +74,8 @@ export async function GET(
                 uptime,
                 me,
                 hasInstance: !!instance,
-                pairingCode: user.authMethod === "oauth" || !isOwner ? null : instance?.pairingCode || null
+                isLiveConnected: isConnected,
+                pairingCode: user.authMethod !== "session" || !isOwner ? null : instance?.pairingCode || null
             }
         });
 

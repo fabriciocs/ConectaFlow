@@ -3,8 +3,9 @@
 .gitattributes
 .gitignore
 
-# Node
+# Node and nested add-on installs
 node_modules
+**/node_modules
 npm-debug.log*
 .yarn
 
@@ -14,8 +15,14 @@ out
 .plugin-build
 *.zip
 
-# Runtime data and credentials must never enter an image build context
+# Runtime data, local evidence, agent state and credentials cannot enter the build context
 data
+.remote-desktop
+.codex
+.claude
+.github
+.claude-flow
+.swarm
 uploads
 *.db
 *.sqlite
@@ -31,11 +38,9 @@ test-*.js
 fix_test.js
 *.patch
 
-# Environment
-.env
-.env.local
-.env.production
-.env.*.local
+# Environment: include only the non-secret template
+**/.env*
+!.env.example
 
 # Docker
 .dockerignore

@@ -98,7 +98,7 @@ function LoginForm() {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen relative overflow-hidden bg-background">
+    <main className="flex items-center justify-center min-h-screen relative overflow-hidden bg-background">
       <div className="absolute top-4 right-4 z-20">
         <LanguageSwitcher />
       </div>
@@ -108,7 +108,7 @@ function LoginForm() {
 
       <div className="relative z-10 w-full max-w-md p-4 animate-in fade-in zoom-in-95 duration-500">
         <div className="flex flex-col items-center mb-8">
-          <BrandMark className="mb-4" />
+          <BrandMark homeLink className="mb-4" />
           <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('login.title')}</h1>
           <p className="text-muted-foreground mt-2">{t('login.subtitle', { appName: brand.name })}</p>
         </div>
@@ -162,6 +162,11 @@ function LoginForm() {
                 )}
               />
 
+              <div className="text-right">
+                <Link href="/auth/forgot-password" className="text-sm font-medium text-primary hover:underline">
+                  {t('login.forgotPassword')}
+                </Link>
+              </div>
               <Button
                 type="submit"
                 size="lg"
@@ -191,7 +196,7 @@ function LoginForm() {
           </Link>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

@@ -13,7 +13,9 @@ export function requestBasePath(headers: HeaderReader): string {
 
 export function requestPublicOrigin(headers: HeaderReader, fallbackUrl: string | URL): string {
   const fallback = new URL(fallbackUrl);
-  const host = headers.get("x-forwarded-host")?.split(",", 1)[0].trim() || fallback.host;
+  const host = headers.get("x-forwarded-host")?.split(",", 1)[0].trim()
+    || headers.get("host")?.split(",", 1)[0].trim()
+    || fallback.host;
   const forwardedProtocol = headers.get("x-forwarded-proto")?.split(",", 1)[0].trim().toLowerCase();
   const protocol = forwardedProtocol ? `${forwardedProtocol}:` : fallback.protocol;
   if (protocol !== "http:" && protocol !== "https:") return fallback.origin;
@@ -41,8 +43,8 @@ export function safeCallbackPath(value: string | null | undefined, basePath: str
     return safeFallback;
   }
   try {
-    const parsed = new URL(value, "https://wa-akg.invalid");
-    if (parsed.origin !== "https://wa-akg.invalid") return safeFallback;
+    const parsed = new URL(value, "https://app.invalid");
+    if (parsed.origin !== "https://app.invalid") return safeFallback;
     return withBasePath(`${parsed.pathname}${parsed.search}${parsed.hash}`, basePath);
   } catch {
     return safeFallback;
@@ -54,7 +56,25 @@ export function withoutBasePath(path: string, basePath: string): string {
   return path.slice(basePath.length) || "/";
 }
 
+/**
+ * The browser's actual pathname takes precedence over a proxy-supplied hint.
+ * Known application route segments delimit a URL prefix of any depth.
+ * A bare path such as /wa-akg is the mounted application's home page.
+ */
+export function basePathFromPathname(pathname: string): string {
+  const routeRoots = new Set([
+    "api", "auth", "authorize", "dashboard", "docs", "error", "onboarding",
+    "privacy", "swagger", "terms", ".well-known", "_next", "brand",
+    "manifest.webmanifest", "favicon.ico", "icon.png",
+  ]);
+  const segments = pathname.split("/").filter(Boolean);
+  const firstRoute = segments.findIndex((segment) => routeRoots.has(segment));
+  return normalizeBasePath("/" + (firstRoute < 0 ? segments : segments.slice(0, firstRoute)).join("/"));
+}
+
 export function clientBasePath(): string {
   if (typeof document === "undefined") return "";
+  const path = document.location?.pathname;
+  if (typeof path === "string") return basePathFromPathname(path);
   return normalizeBasePath(document.documentElement.dataset.basePath);
 }

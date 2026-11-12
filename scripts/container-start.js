@@ -24,8 +24,11 @@ function commandFor(mode, env = process.env) {
         const executable = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
         return [executable, [executable, "scripts/start-production.mjs"]];
     } else if (mode === "migrate") {
-        const executable = path.join(root, "node_modules", "prisma", "build", "index.js");
-        return [executable, [executable, "migrate", "deploy"]];
+        const executable = path.join(root, "scripts", "prisma-bootstrap-v2.mjs");
+        const databaseName = decodeURIComponent(new URL(buildDatabaseUrl(env)).pathname.slice(1));
+        const args = [executable, "--deploy", "--expect-db", databaseName, "--allow-legacy-deploy"];
+        if (env.WA_AKG_ALLOW_EMPTY_V2_BOOTSTRAP === "true") args.push("--confirm-empty-v2");
+        return [executable, args];
     } else if (mode === "baseline") {
         const migration = env.PRISMA_BASELINE_MIGRATION;
         if (!migration || !/^\d{14}_[a-z0-9_]+$/.test(migration)) {

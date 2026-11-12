@@ -8,30 +8,33 @@ import { requestBasePath, withBasePath } from "@/lib/base-path";
 import { getBrandConfig } from "@/lib/branding-server";
 import { BrandMark } from "@/components/auth/brand-mark";
 import { OAuthSessionSelector } from "@/components/auth/oauth-session-selector";
+import { readBrowserTenantSelection, resolveTenantMembership } from "@/lib/tenancy/context";
 
 export const dynamic = "force-dynamic";
 
 export default async function OAuthConsentPage({ searchParams }: { searchParams: Promise<{ requestId?: string }> }) {
   const { requestId } = await searchParams;
   const session = await auth();
-  const basePath = requestBasePath(await headers());
+  const requestHeaders = await headers();
+  const basePath = requestBasePath(requestHeaders);
   if (!session?.user?.id) {
     const callbackUrl = withBasePath(`/auth/oauth/consent?requestId=${encodeURIComponent(requestId ?? "")}`, basePath);
     const login = new URLSearchParams({ callbackUrl });
     redirect(withBasePath(`/auth/login?${login.toString()}`, basePath));
   }
-  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true, role: true } });
+  const account = await prisma.user.findUnique({ where: { id: session.user.id }, select: { emailVerified: true } });
   if (!account?.emailVerified) redirect(withBasePath("/auth/login?emailVerificationRequired=1", basePath));
   const dashboardPath = withBasePath("/dashboard", basePath);
   if (!requestId) redirect(dashboardPath);
-  const authorization = await bindAuthorizationRequest(requestId, session.user.id);
+  const selection = readBrowserTenantSelection(new Request("http://localhost/", { headers: requestHeaders }));
+  const membership = await resolveTenantMembership(session.user.id, selection);
+  if (!membership) redirect(`${dashboardPath}?oauth_error=tenant_required`);
+  const authorization = await bindAuthorizationRequest(requestId, session.user.id, membership.tenantId);
   if (!authorization) redirect(`${dashboardPath}?oauth_error=expired_request`);
   const t = await getTranslations("oauthConsent");
   const brand = await getBrandConfig();
   const sessions = await prisma.session.findMany({
-    where: account.role === "SUPERADMIN"
-      ? {}
-      : { userId: session.user.id },
+    where: { userId: session.user.id, tenantId: membership.tenantId },
     select: { id: true, sessionId: true, name: true },
     orderBy: { name: "asc" },
   });
@@ -40,7 +43,7 @@ export default async function OAuthConsentPage({ searchParams }: { searchParams:
   return (
     <main className="mx-auto w-full max-w-xl px-6 py-12" aria-labelledby="oauth-consent-title">
       <section className="rounded-xl border bg-card p-6 shadow-sm">
-        <div className="mb-6 flex items-center gap-3"><BrandMark className="h-10 w-10 rounded-xl text-sm" /><span className="font-semibold">{brand.name}</span></div>
+        <div className="mb-6 flex items-center gap-3"><BrandMark homeLink className="h-10 w-10 rounded-xl text-sm" /><span className="font-semibold">{brand.name}</span></div>
         <p className="text-sm text-muted-foreground">{t("eyebrow")}</p>
         <h1 id="oauth-consent-title" className="mt-2 text-2xl font-semibold">{t("allowClient", { name: authorization.client.name })}</h1>
         {authorization.client.description && <p className="mt-2 text-sm text-muted-foreground">{authorization.client.description}</p>}

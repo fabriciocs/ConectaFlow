@@ -2,11 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import type { Metadata } from 'next';
 import Link from '@/components/app-link';
-import { getBrandConfig } from '@/lib/branding-server';
+import { getRequestBrandConfig } from '@/lib/branding-server';
+import { BrandMark } from '@/components/auth/brand-mark';
 import { DocsClient } from './docs-client';
 
 export async function generateMetadata(): Promise<Metadata> {
-    const brand = await getBrandConfig();
+    const brand = await getRequestBrandConfig();
     const title = `API Documentation | ${brand.name}`;
     const description = `${brand.description} Complete API reference for messaging, groups, contacts, media, and webhooks.`;
 
@@ -30,7 +31,7 @@ export interface TocSection {
 }
 
 export default async function PublicDocsPage() {
-    const brand = await getBrandConfig();
+    const brand = await getRequestBrandConfig();
     const filePath = path.join(process.cwd(), 'docs', 'API_DOCUMENTATION.md');
     const packagePath = path.join(process.cwd(), 'package.json');
     let content = '';
@@ -73,13 +74,7 @@ export default async function PublicDocsPage() {
                 <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-2 min-w-0">
                         <div className="flex items-center gap-2 min-w-0" aria-label={brand.name}>
-                            {brand.logoUrl ? (
-                                <img src={brand.logoUrl} alt="" className="h-7 w-7 rounded-lg object-cover" />
-                            ) : (
-                                <span className="h-7 w-7 rounded-lg bg-primary text-primary-foreground grid place-items-center text-xs font-bold">
-                                    {brand.initials}
-                                </span>
-                            )}
+                            <BrandMark homeLink className="h-7 w-7 rounded-lg" />
                             <span className="text-lg sm:text-xl font-bold tracking-tight truncate">{brand.name}</span>
                         </div>
                         <span className="px-2.5 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-semibold tracking-wide border border-primary/20 shrink-0">

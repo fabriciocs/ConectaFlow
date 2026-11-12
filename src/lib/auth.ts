@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { authConfig } from "@/auth.config";
+import { checkLoginAttemptQuota } from "./login-rate-limit";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
@@ -13,15 +14,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      authorize: async (credentials) => {
+      authorize: async (credentials, request) => {
         const parsedCredentials = z
           .object({ email: z.string().email(), password: z.string().min(6) })
           .safeParse(credentials);
 
         if (parsedCredentials.success) {
           const { email, password } = parsedCredentials.data;
+          if (!(await checkLoginAttemptQuota(email, request))) return null;
           
-          const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+          const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
           if (!user) return null;
 
           const passwordsMatch = await bcrypt.compare(password, user.password);

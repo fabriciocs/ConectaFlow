@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { validateApiKey } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requestBasePath, requestPublicOrigin, withBasePath } from "@/lib/base-path";
@@ -9,15 +9,28 @@ export async function proxy(request: NextRequest) {
     const basePath = requestBasePath(request.headers);
     const publicOrigin = requestPublicOrigin(request.headers, request.url);
 
+    // Compatibility for older OAuth clients that still open /authorize.
+    // Forward every parameter unchanged to the existing validated PKCE route.
+    if (pathname === "/authorize") {
+        const canonical = new URL(withBasePath("/api/oauth/authorize", basePath) + request.nextUrl.search, publicOrigin);
+        return NextResponse.redirect(canonical, { status: 307, headers: { "Cache-Control": "no-store" } });
+    }
+
     // Public routes that don't require authentication
-    const publicRoutes = ["/auth/login", "/auth/register", "/api/auth", "/terms", "/privacy"];
+    const publicRoutes = [
+        "/auth/login", "/auth/register", "/auth/verify-email",
+        "/auth/forgot-password", "/auth/reset-password", "/auth/channel-link",
+        "/api/auth", "/terms", "/privacy",
+    ];
 
     // Check if it's a public route
     const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route));
 
-    // Allow Next.js internals and favicon only
+    // Public application assets and the generated PWA manifest never require a session.
     if (
         pathname.startsWith("/_next") ||
+        pathname === "/manifest.webmanifest" ||
+        (pathname.startsWith("/brand/") && /\.(?:svg|png|ico|webp)$/i.test(pathname)) ||
         pathname === "/favicon.ico" ||
         pathname === "/.well-known/oauth-protected-resource" ||
         pathname === "/.well-known/oauth-authorization-server"
@@ -33,6 +46,8 @@ export async function proxy(request: NextRequest) {
 
     // API routes: Check for valid API key or session
     if (pathname.startsWith("/api/")) {
+        // This endpoint authenticates its own dedicated internal bearer token.
+        if (pathname === "/api/channel-links/challenges") return NextResponse.next();
         // OAuth protocol endpoints enforce their own client, token, or user-session
         // checks. They must reach their route handlers before an end-user session
         // exists (for example, during authorization-code and token exchange).
@@ -40,13 +55,10 @@ export async function proxy(request: NextRequest) {
             return NextResponse.next();
         }
 
-        // Check for API key in header
-        const apiKey = request.headers.get("x-api-key");
-        if (apiKey) {
-            // Defense-in-depth: validate API key immediately
-            const user = await validateApiKey(request);
+        if (request.headers.has("x-api-key") || request.headers.has("authorization")) {
+            const user = await getAuthenticatedUser(request);
             if (!user) {
-                return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
+                return NextResponse.json({ error: "Invalid credential" }, { status: 401 });
             }
             return NextResponse.next();
         }

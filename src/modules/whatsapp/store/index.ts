@@ -5,35 +5,30 @@ import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { onMessageReceived, onMessageSent, dispatchWebhook, downloadAndSaveMedia } from "@/lib/webhook";
 import { buildInboundWebhookEnvelope, linkInboundEvent, recordInboundEvent } from "../inbound-event.service";
 import { handleBotCommand, setSessionStartTime } from "../bot/command-handler";
+import { handleChannelLinkCommand, isChannelLinkCommand } from "../channel-link-handler";
 import { resolveToPhoneJid, isLidJid, normalizeJid } from "@/lib/jid-utils";
 
 import { Server } from "socket.io";
 import { logger } from "@/lib/logger";
-import { getSessionPublicRoom } from "@/server/socket";
+import { emitSessionRoomEvent } from "@/server/socket";
+import { activeWhatsAppSessionWhere, type WhatsAppSessionBinding } from "../session-membership";
 
-export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server | null) => {
+export const bindSessionStore = (sock: WASocket, binding: WhatsAppSessionBinding, io: Server | null) => {
+    const { sessionId, tenantId } = binding;
     // Set start time for uptime command
     setSessionStartTime(sessionId);
 
-    // First, get the database Session ID (cuid)
-    let dbSessionId: string | null = null;
-
-    // Initialize by fetching the session ID
-    (async () => {
-        const session = await prisma.session.findUnique({
-            where: { sessionId },
-            select: { id: true }
-        });
-        if (session) {
-            dbSessionId = session.id;
-            logger.info("Store", `Message store initialized for session ${sessionId} (db: ${dbSessionId})`);
-        } else {
-            logger.error("Store", `Session ${sessionId} not found for message store`);
-        }
-    })();
+    const getSession = () => prisma.session.findUnique({
+        where: activeWhatsAppSessionWhere(binding),
+        select: { id: true },
+    });
 
     // Handle Messages
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
+
         // Process all message types: notify, append, and history sync
         if (type !== 'notify' && type !== 'append') {
             // For history sync, we still want to save messages
@@ -42,14 +37,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
         // Emit to socket room for real-time frontend updates
         if (type === 'notify' || type === 'append') {
-            io?.to(getSessionPublicRoom(sessionId)).emit('message.upsert', { messages, type });
-        }
-
-        // Ensure we have the database session ID
-        if (!dbSessionId) {
-            const session = await prisma.session.findUnique({ where: { sessionId }, select: { id: true } });
-            if (!session) return;
-            dbSessionId = session.id;
+            void emitSessionRoomEvent(io, tenantId, sessionId, 'message.upsert', { messages, type });
         }
 
         type SavedMessage = Awaited<ReturnType<typeof prisma.message.create>>;
@@ -67,15 +55,19 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                     await sock.readMessages([msg.key]);
                 }
 
-                const savedMessage = await processAndSaveMessage(msg, dbSessionId, sessionId, type === 'notify', sock, config, io);
+                const savedMessage = await processAndSaveMessage(msg, dbSessionId, sessionId, tenantId, type === 'notify', sock, config, io);
                 if (savedMessage) {
                     processedMessages.push(savedMessage);
                 }
 
                 // Execute Bot Commands (Only for Notify / New Messages)
                 if (type === 'notify' && savedMessage) {
-                    // Run in background, don't await strictly to not block saving
-                    handleBotCommand(sock, sessionId, msg).catch(e => logger.error("Bot", "Bot Handler Error", e));
+                    if (isChannelLinkCommand(msg)) {
+                        handleChannelLinkCommand(sock, sessionId, msg).catch(() => logger.warn("ChannelLink", "Link command processing failed"));
+                    } else {
+                        // Run in background, don't await strictly to not block saving
+                        handleBotCommand(sock, sessionId, msg).catch(e => logger.error("Bot", "Bot Handler Error", e));
+                    }
                 }
             } catch (error) {
                 logger.error("Store", "Error saving message", error);
@@ -90,7 +82,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp
             }));
             logger.debug("Socket", `Emitting message.update for ${serialized.length} messages in session ${sessionId}`);
-            io?.to(getSessionPublicRoom(sessionId)).emit('message.update', serialized);
+            void emitSessionRoomEvent(io, tenantId, sessionId, 'message.update', serialized);
         }
     });
 
@@ -98,19 +90,16 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
     sock.ev.on('messaging-history.set', async ({ messages, chats, contacts, isLatest }) => {
         logger.info("Store", `History sync: ${messages?.length || 0} messages, ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, latest: ${isLatest}`);
 
-        // Ensure we have the database session ID
-        if (!dbSessionId) {
-            const session = await prisma.session.findUnique({ where: { sessionId }, select: { id: true } });
-            if (!session) return;
-            dbSessionId = session.id;
-        }
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
 
         // Save all historical messages
         if (messages && messages.length > 0) {
             logger.info("Store", `Syncing ${messages.length} historical messages...`);
             for (const msg of messages) {
                 try {
-                    await processAndSaveMessage(msg, dbSessionId, sessionId, false, sock, undefined, io);
+                    await processAndSaveMessage(msg, dbSessionId, sessionId, tenantId, false, sock, undefined, io);
                 } catch (error) {
                     logger.error("Store", "Error saving historical message", error);
                 }
@@ -126,20 +115,18 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
     // Handle Contacts Upsert
     sock.ev.on('contacts.upsert', async (contacts) => {
-        // Ensure we have the database session ID
-        if (!dbSessionId) {
-            const session = await prisma.session.findUnique({ where: { sessionId }, select: { id: true } });
-            if (!session) return;
-            dbSessionId = session.id;
-        }
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
 
         for (const c of contacts) {
             try {
                 if (!c.id) continue;
                 await prisma.contact.upsert({
-                    where: { sessionId_jid: { sessionId: dbSessionId, jid: c.id } },
+                    where: { sessionId_jid: { sessionId: dbSessionId, jid: c.id }, tenantId },
                     create: {
                         sessionId: dbSessionId,
+                        tenantId,
                         jid: c.id,
                         lid: c.lid || undefined,
                         name: c.name || c.notify || c.verifiedName,
@@ -159,7 +146,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 });
 
                 // Dispatch webhook for contact update
-                dispatchWebhook(sessionId, "contact.update", { jid: c.id, name: c.name, notify: c.notify });
+                dispatchWebhook(sessionId, tenantId, "contact.update", { jid: c.id, name: c.name, notify: c.notify });
             } catch (e) {
                 logger.error("Store", "Error saving contact", e);
             }
@@ -168,7 +155,9 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
     // Handle Message Status Updates
     sock.ev.on('messages.update', async (updates) => {
-        if (!dbSessionId) return;
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
 
         for (const update of updates) {
             try {
@@ -186,12 +175,12 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 const status = statusMap[update.update?.status || 0] || 'PENDING';
 
                 await prisma.message.updateMany({
-                    where: { sessionId: dbSessionId, keyId },
+                    where: { sessionId: dbSessionId, tenantId, keyId },
                     data: { status }
                 });
 
                 // Dispatch webhook for message status update
-                dispatchWebhook(sessionId, "message.status", {
+                dispatchWebhook(sessionId, tenantId, "message.status", {
                     keyId,
                     remoteJid: update.key?.remoteJid,
                     status
@@ -204,7 +193,9 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
     // Handle Group Updates
     sock.ev.on('groups.update', async (updates) => {
-        if (!dbSessionId) return;
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
 
         for (const update of updates) {
             try {
@@ -222,13 +213,13 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
                 if (Object.keys(updateData).length > 0) {
                     await prisma.group.updateMany({
-                        where: { sessionId: dbSessionId, jid: update.id },
+                        where: { sessionId: dbSessionId, tenantId, jid: update.id },
                         data: updateData
                     });
                 }
                 
                 // Trigger webhook
-                dispatchWebhook(sessionId, "group.update", {
+                dispatchWebhook(sessionId, tenantId, "group.update", {
                     jid: update.id,
                     ...update
                 });
@@ -240,13 +231,16 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
     // Handle Group Participants Update
     sock.ev.on('group-participants.update', async (update) => {
-        if (!dbSessionId || !update.id) return;
+        if (!update.id) return;
+        const session = await getSession();
+        if (!session) return;
+        const dbSessionId = session.id;
 
         try {
             // update.id is the group JID
             // update.participants is array of JIDs
             // update.action is 'add', 'remove', 'promote', 'demote'
-            dispatchWebhook(sessionId, "group.participant", {
+            dispatchWebhook(sessionId, tenantId, "group.participant", {
                 jid: update.id,
                 action: update.action,
                 participants: update.participants
@@ -272,6 +266,7 @@ async function processAndSaveMessage(
     msg: WAMessage,
     dbSessionId: string,
     sessionId: string,
+    tenantId: string,
     triggerWebhook: boolean,
     sock?: WASocket,
     config?: BotConfig | null,
@@ -309,13 +304,13 @@ async function processAndSaveMessage(
 
                 // Update DB safely
                 await prisma.message.updateMany({
-                    where: { sessionId: dbSessionId, keyId: targetKeyId },
+                    where: { sessionId: dbSessionId, tenantId, keyId: targetKeyId },
                     data: { content: newText } // Note: we don't update timestamp of original
                 });
 
                 // Trigger Webhook
                 if (triggerWebhook) {
-                    dispatchWebhook(sessionId, "message.edited", {
+                    dispatchWebhook(sessionId, tenantId, "message.edited", {
                         keyId: targetKeyId,
                         newContent: newText,
                         remoteJid,
@@ -332,7 +327,7 @@ async function processAndSaveMessage(
             let antiDeleteEnabled = false;
             try {
                 const s = await prisma.session.findUnique({
-                    where: { sessionId },
+                    where: { sessionId, tenantId },
                     select: { config: true }
                 });
                 const sessionConfig = s?.config;
@@ -343,20 +338,20 @@ async function processAndSaveMessage(
             if (antiDeleteEnabled) {
                 // Anti-delete: read original, keep content, append marker
                 const orig = await prisma.message.findFirst({
-                    where: { sessionId: dbSessionId, keyId: targetKeyId },
+                    where: { sessionId: dbSessionId, tenantId, keyId: targetKeyId },
                     select: { content: true }
                 });
                 const preserved = (orig?.content || "") + "\n\n🛡️ [Deleted by sender — preserved]";
                 await prisma.message.updateMany({
-                    where: { sessionId: dbSessionId, keyId: targetKeyId },
+                    where: { sessionId: dbSessionId, tenantId, keyId: targetKeyId },
                     data: { content: preserved }
                 });
                 // Re-fetch & re-emit so frontend updates
                 const updated = await prisma.message.findFirst({
-                    where: { sessionId: dbSessionId, keyId: targetKeyId }
+                    where: { sessionId: dbSessionId, tenantId, keyId: targetKeyId }
                 });
                 if (updated) {
-                    io?.to(getSessionPublicRoom(sessionId)).emit("message.update", [{
+                    void emitSessionRoomEvent(io, tenantId, sessionId, "message.update", [{
                         ...updated,
                         timestamp: updated.timestamp instanceof Date ? updated.timestamp.toISOString() : updated.timestamp
                     }]);
@@ -364,14 +359,14 @@ async function processAndSaveMessage(
             } else {
                 // Normal: mark as deleted
                 await prisma.message.updateMany({
-                    where: { sessionId: dbSessionId, keyId: targetKeyId },
+                    where: { sessionId: dbSessionId, tenantId, keyId: targetKeyId },
                     data: { content: "[This message was deleted]", status: "FAILED" }
                 });
             }
 
             // Trigger Webhook
             if (triggerWebhook) {
-                dispatchWebhook(sessionId, "message.deleted", {
+                dispatchWebhook(sessionId, tenantId, "message.deleted", {
                     keyId: targetKeyId,
                     remoteJid,
                     fromMe
@@ -398,7 +393,7 @@ async function processAndSaveMessage(
     // Baileys 'notify' event can sometimes trigger multiple times or for history
     // Baileys 'notify' event can sometimes trigger multiple times or for history
     const existingMessage = await prisma.message.findUnique({
-        where: { sessionId_keyId: { sessionId: dbSessionId, keyId: keyId! } },
+        where: { sessionId_keyId: { sessionId: dbSessionId, keyId: keyId! }, tenantId },
         select: { id: true, status: true }
     });
 
@@ -406,7 +401,7 @@ async function processAndSaveMessage(
         // Message exists! Update status if changed, but DO NOT re-trigger webhooks/bot
         if (fromMe && existingMessage.status !== 'SENT') {
             await prisma.message.update({
-                where: { id: existingMessage.id },
+                where: { id: existingMessage.id, tenantId },
                 data: { status: 'SENT' }
             });
         }
@@ -419,7 +414,7 @@ async function processAndSaveMessage(
     let inboundEventId: string | null = null;
     if (triggerWebhook && !fromMe) {
         const inboundSession = await prisma.session.findUnique({
-            where: { id: dbSessionId },
+            where: { id: dbSessionId, tenantId },
             select: { userId: true },
         });
 
@@ -432,6 +427,7 @@ async function processAndSaveMessage(
         const payload = buildInboundWebhookEnvelope(sessionId, inboundSession.userId, event, msg);
         const receipt = await recordInboundEvent({
             sessionDbId: dbSessionId,
+            tenantId,
             sessionId,
             event,
             data: msg,
@@ -587,6 +583,7 @@ async function processAndSaveMessage(
         const newMessage = await prisma.message.create({
             data: {
                 sessionId: dbSessionId,
+                tenantId,
                 remoteJid: normalizeJid(normalizedRemoteJid),
                 senderJid,
                 fromMe: fromMe || false,
@@ -603,7 +600,7 @@ async function processAndSaveMessage(
 
         if (inboundEventId) {
             try {
-                const linked = await linkInboundEvent(inboundEventId, {
+                const linked = await linkInboundEvent(inboundEventId, tenantId, {
                     messageId: newMessage.id,
                     mediaRef: fileUrl,
                 });
@@ -631,9 +628,10 @@ async function processAndSaveMessage(
             }
 
             await prisma.contact.upsert({
-                where: { sessionId_jid: { sessionId: dbSessionId, jid: contactJid } },
+                where: { sessionId_jid: { sessionId: dbSessionId, jid: contactJid }, tenantId },
                 create: {
                     sessionId: dbSessionId,
+                    tenantId,
                     jid: contactJid,
                     notify: !fromMe ? pushName : undefined,
                     name: !fromMe ? pushName : undefined,
@@ -649,7 +647,7 @@ async function processAndSaveMessage(
             if (!fromMe && triggerWebhook && config?.welcomeMessage && sock) {
                 // Let's check if message count for this contact is exactly 1 (the one we just saved)
                 const msgCount = await prisma.message.count({
-                    where: { sessionId: dbSessionId, remoteJid: finalRemoteJid }
+                    where: { sessionId: dbSessionId, tenantId, remoteJid: finalRemoteJid }
                 });
 
                 if (msgCount === 1) {
@@ -662,9 +660,9 @@ async function processAndSaveMessage(
         // Trigger webhook for new messages only (not history sync)
         if (triggerWebhook) {
             if (fromMe) {
-                onMessageSent(sessionId, msg, fileUrl).catch(e => logger.error("Webhook", "Error in onMessageSent", e));
+                onMessageSent(sessionId, msg, fileUrl, tenantId).catch(e => logger.error("Webhook", "Error in onMessageSent", e));
             } else {
-            onMessageReceived(sessionId, msg, fileUrl, inboundEventId).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
+            onMessageReceived(sessionId, msg, fileUrl, inboundEventId, tenantId).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
             }
         }
 

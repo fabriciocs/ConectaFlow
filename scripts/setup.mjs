@@ -135,7 +135,7 @@ async function askSecret(rl, question, fallback = "") {
   });
 }
 
-async function configure({ nonInteractive = false, requestedMode, applyMigrations = false } = {}) {
+async function configure({ nonInteractive = false, requestedMode, applyMigrations = false, allowEmptyV2 = false } = {}) {
   const template = fs.readFileSync(examplePath, "utf8");
   const existingText = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : null;
   const detected = detectConfig(existingText, template);
@@ -160,16 +160,18 @@ async function configure({ nonInteractive = false, requestedMode, applyMigration
       values.SWAGGER_PASSWORD = await askSecret(rl, "Senha Swagger", "");
       values.NODE_ENV = await ask(rl, "NODE_ENV (development/production)", "development");
     }
-    if (requestedMode === "production") {
+    const mode = requestedMode || (rl ? await ask(rl, "Modo (dev/production/docker)", "dev") : "dev");
+    if (!["dev", "production", "docker"].includes(mode)) throw new Error(`Modo desconhecido: ${mode}`);
+    if (mode === "production") {
       values.HOSTNAME = rl ? await ask(rl, "Binding de rede (127.0.0.1/0.0.0.0)", values.HOSTNAME || "127.0.0.1") : (values.HOSTNAME || "127.0.0.1");
       values.NODE_ENV = "production";
       if (rl && !(await ask(rl, "Executar prisma migrate deploy agora? (s/N)", "N")).toLowerCase().startsWith("s")) {
         throw new Error("Produção exige confirmação explícita para executar prisma migrate deploy.");
       }
       if (nonInteractive && !applyMigrations) throw new Error("Modo não interativo exige --apply-migrations em produção.");
+      if (rl) allowEmptyV2 = (await ask(rl, "Permitir bootstrap V2 somente em banco vazio? (s/N)", "N")).toLowerCase().startsWith("s");
     }
     if (nonInteractive) values.NODE_ENV = values.NODE_ENV || "development";
-    const mode = requestedMode || (rl ? await ask(rl, "Modo (dev/production/docker)", "dev") : "dev");
     const errors = validate(values, mode);
     if (errors.length) throw new Error(`Configuração inválida:\n- ${errors.join("\n- ")}`);
     const shouldWrite = detected.state === "missing" || reconfigure || detected.state === "legacy";
@@ -178,7 +180,7 @@ async function configure({ nonInteractive = false, requestedMode, applyMigration
       fs.writeFileSync(envPath, renderEnv(template, values), { encoding: "utf8", mode: 0o600 });
       console.log(previous ? `Backup criado: ${path.basename(previous)}` : "Configuração criada.");
     } else console.log("Configuração atual preservada.");
-    return { mode, state: detected.state, envPath, values, applyMigrations: mode === "production" ? (applyMigrations || Boolean(rl)) : false };
+    return { mode, state: detected.state, envPath, values, applyMigrations: mode === "production" ? (applyMigrations || Boolean(rl)) : false, allowEmptyV2: mode === "production" && allowEmptyV2 };
   } finally { rl?.close(); }
 }
 
@@ -200,9 +202,12 @@ function isPortAvailable(port, host) {
 
 async function runProduction(result) {
   if (!(await isPortAvailable(result.values.PORT, result.values.HOSTNAME))) throw new Error(`A porta ${result.values.PORT} não está disponível em ${result.values.HOSTNAME}.`);
-  console.log("[1/3] Aplicando migrações Prisma...");
-  const migrationCode = await runProcess(process.platform === "win32" ? "npx.cmd" : "npx", ["prisma", "migrate", "deploy"], result.values);
-  if (migrationCode !== 0) throw new Error(`prisma migrate deploy falhou com código ${migrationCode}. O build não foi iniciado.`);
+  console.log("[1/3] Validando histórico e aplicando somente migrações autorizadas...");
+  const databaseName = decodeURIComponent(new URL(result.values.DATABASE_URL).pathname.slice(1));
+  const migrationArgs = ["scripts/prisma-bootstrap-v2.mjs", "--deploy", "--expect-db", databaseName, "--allow-legacy-deploy"];
+  if (result.allowEmptyV2) migrationArgs.push("--confirm-empty-v2");
+  const migrationCode = await runProcess(process.execPath, migrationArgs, result.values);
+  if (migrationCode !== 0) throw new Error(`Gate seguro de migrações falhou com código ${migrationCode}. O build não foi iniciado.`);
   console.log("[2/3] Construindo bundle de produção...");
   const buildCode = await runProcess(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], result.values);
   if (buildCode !== 0) throw new Error(`npm run build falhou com código ${buildCode}. O servidor não foi iniciado.`);
@@ -210,9 +215,22 @@ async function runProduction(result) {
   return runProcess(process.platform === "win32" ? "npm.cmd" : "npm", ["start"], result.values);
 }
 
+// Windows batch shims cannot be spawned directly by Node 24. All callers use
+// fixed, trusted command names and arguments (never user-provided shell input).
+export function spawnPortable(file, args, options = {}) {
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(file)) {
+    const tokens = [file, ...args];
+    if (!tokens.every((token) => /^[a-z0-9_./:\\-]+$/i.test(token))) {
+      throw new Error("Comando Windows contém caracteres não permitidos.");
+    }
+    return spawn(tokens.join(" "), { ...options, shell: true });
+  }
+  return spawn(file, args, { ...options, shell: false });
+}
+
 function runProcess(file, args, values) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd: root, stdio: ["inherit", "pipe", "pipe"], shell: false, env: { ...process.env, ...values, NODE_ENV: "production" } });
+    const child = spawnPortable(file, args, { cwd: root, stdio: ["inherit", "pipe", "pipe"], env: { ...process.env, ...values, NODE_ENV: "production" } });
     const forward = (chunk) => output.write(sanitizeOutput(String(chunk), values));
     child.stdout.on("data", forward);
     child.stderr.on("data", forward);
@@ -232,12 +250,12 @@ export function runCommand(mode) {
   const spec = command(mode);
   return new Promise((resolve, reject) => {
     const env = { ...process.env, NODE_ENV: mode === "production" ? "production" : process.env.NODE_ENV };
-    const child = spawn(spec.file, spec.args, { cwd: root, stdio: "inherit", shell: false, env });
+    const child = spawnPortable(spec.file, spec.args, { cwd: root, stdio: "inherit", env });
     child.on("error", (error) => reject(new Error(`Não foi possível executar ${spec.file}: ${error.message}`)));
     child.on("exit", async (code) => {
       if ((code ?? 1) !== 0 || !spec.then) return resolve(code ?? 1);
       try {
-        const followUp = spawn(spec.file, spec.then, { cwd: root, stdio: "inherit", shell: false, env });
+        const followUp = spawnPortable(spec.file, spec.then, { cwd: root, stdio: "inherit", env });
         followUp.on("error", (error) => reject(new Error(`Não foi possível executar ${spec.file}: ${error.message}`)));
         followUp.on("exit", (followUpCode) => resolve(followUpCode ?? 1));
       } catch (error) { reject(error); }
@@ -251,7 +269,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const modeArg = process.argv.find((arg) => arg.startsWith("--mode="))?.split("=")[1] ?? (modeIndex >= 0 ? process.argv[modeIndex + 1] : undefined);
   const applyMigrations = args.has("--apply-migrations");
   try {
-    const result = await configure({ nonInteractive: args.has("--non-interactive"), requestedMode: modeArg, applyMigrations });
+    const result = await configure({ nonInteractive: args.has("--non-interactive"), requestedMode: modeArg, applyMigrations, allowEmptyV2: args.has("--allow-empty-v2") });
     if (!args.has("--configure-only")) process.exitCode = result.mode === "production" ? await runProduction(result) : await runCommand(result.mode);
   } catch (error) { console.error(error instanceof Error ? error.message : "Falha ao configurar WA-AKG."); process.exitCode = 1; }
 }

@@ -6,10 +6,13 @@ import { getBrandConfig } from "@/lib/branding-server";
 import { getDefaultBotName } from "@/lib/branding";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { emitSessionRoomEvent } from "@/server/socket";
 import { generateSessionId, isValidSessionId } from "@/lib/session-id";
+import { activeWhatsAppSessionWhere } from "./session-membership";
 
 const SESSION_LEASE_MS = 90_000;
 const SESSION_LEASE_RENEW_MS = 30_000;
+const SESSION_LEASE_RETRY_MS = 30_000;
 
 const globalForWhatsapp = globalThis as typeof globalThis & {
     waManager?: WhatsAppManager;
@@ -22,6 +25,7 @@ export class WhatsAppManager {
     private starts: Map<string, Promise<void>> = new Map();
     private leaseTokens: Map<string, string> = new Map();
     private leaseTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+    private leaseRetries = new Map<string, { timer: ReturnType<typeof setTimeout>; cancelled: boolean }>();
     private loadPromise: Promise<void> | null = null;
     public io: Server | null = null;
     private readonly workerId = `${process.env.WA_AKG_WORKER_ID || "wa-akg"}:${os.hostname()}:${process.pid}:${randomUUID()}`;
@@ -55,39 +59,48 @@ export class WhatsAppManager {
         await prisma.whatsAppSessionLease.count();
         const sessions = await prisma.session.findMany({
             where: {
-                status: { not: "LOGGED_OUT" }
+                status: { not: "LOGGED_OUT" },
+                tenant: { status: "ACTIVE" }
             },
-            select: { sessionId: true, userId: true, status: true }
+            select: { sessionId: true, userId: true, status: true, tenantId: true }
         });
 
         let started = 0;
+        let waitingForLease = 0;
         for (const session of sessions) {
+            if (!session.tenantId) continue;
+            const binding = { ...session, tenantId: session.tenantId };
+            if (!(await prisma.session.findUnique({ where: activeWhatsAppSessionWhere(binding), select: { id: true } }))) continue;
             const existing = this.sessions.get(session.sessionId);
             if (existing) {
-                await existing.init();
-                started++;
+                if (existing.tenantId === session.tenantId && existing.userId === session.userId) {
+                    await existing.init();
+                    started++;
+                }
                 continue;
             }
             // Only auto-init sessions that were CONNECTED before (have auth creds)
             const authCount = await prisma.authState.count({
-                where: { sessionId: session.sessionId }
+                where: { sessionId: session.sessionId, tenantId: session.tenantId }
             });
             if (authCount === 0) {
                 // No credentials — session was created but never connected
                 // Set to STOPPED so it doesn't spam reconnect
                 await prisma.session.update({
-                    where: { sessionId: session.sessionId },
+                    where: { sessionId: session.sessionId, tenantId: session.tenantId },
                     data: { status: "STOPPED" }
                 }).catch(() => {});
                 continue;
             }
 
-            if (!(await this.acquireSessionLease(session.sessionId))) {
-                logger.warn("Manager", `Skipping session ${session.sessionId}; another replica owns the Baileys lease.`);
+            if (!(await this.acquireSessionLease(session.sessionId, session.tenantId))) {
+                logger.warn("Manager", `Skipping session ${session.sessionId}; another replica owns the Baileys lease. Will retry ownership safely.`);
+                this.scheduleLeaseRetry(session.sessionId, session.tenantId);
+                waitingForLease++;
                 continue;
             }
 
-            const instance = new WhatsAppInstance(session.sessionId, session.userId, this.io);
+            const instance = new WhatsAppInstance(session.sessionId, session.userId, session.tenantId, this.io);
             instance.onRemovedFromManager = () => {
                 this.removeInstance(session.sessionId, instance);
                 void this.releaseSessionLease(session.sessionId);
@@ -102,10 +115,10 @@ export class WhatsAppManager {
             }
             started++;
         }
-        logger.success("Manager", `Loaded ${started} sessions (${sessions.length - started} idle skipped).`);
+        logger.success("Manager", `Loaded ${started} sessions (${waitingForLease} waiting for lease, ${sessions.length - started - waitingForLease} idle skipped).`);
     }
 
-    async createSession(userId: string, name: string, customSessionId?: string) {
+    async createSession(userId: string, name: string, customSessionId: string | undefined, tenantId: string) {
         if (!this.io && globalForWhatsapp.io) {
             this.io = globalForWhatsapp.io;
         }
@@ -124,6 +137,7 @@ export class WhatsAppManager {
         const session = await prisma.session.create({
             data: {
                 userId,
+                tenantId,
                 name,
                 sessionId,
                 status: "STOPPED", // Default: stopped, user must click Start
@@ -158,6 +172,7 @@ export class WhatsAppManager {
     }
 
     async deleteSession(sessionId: string) {
+        this.cancelLeaseRetry(sessionId);
         await this.starts.get(sessionId)?.catch(() => undefined);
         const instance = this.sessions.get(sessionId);
         if (instance) {
@@ -169,12 +184,13 @@ export class WhatsAppManager {
     }
 
     async stopSession(sessionId: string) {
+        this.cancelLeaseRetry(sessionId);
         await this.starts.get(sessionId)?.catch(() => undefined);
         const instance = this.sessions.get(sessionId);
         if (instance) {
             await instance.shutdown();
             instance.status = "STOPPED";
-            this.io?.to(`session:public:${sessionId}`).emit("connection.update", { status: "STOPPED" });
+            void emitSessionRoomEvent(this.io, instance.tenantId, sessionId, "connection.update", { status: "STOPPED" });
             await prisma.session.update({
                 where: { sessionId },
                 data: { status: "STOPPED" }
@@ -196,22 +212,31 @@ export class WhatsAppManager {
     }
 
     private async startSessionOnce(sessionId: string) {
+        const session = await prisma.session.findUnique({
+            where: { sessionId },
+            select: { sessionId: true, tenantId: true, userId: true },
+        });
+        if (!session?.tenantId || !(await prisma.session.findUnique({
+            where: activeWhatsAppSessionWhere({ ...session, tenantId: session.tenantId }),
+            select: { id: true },
+        }))) throw new Error("Session not found");
+
         // If already running, do nothing
         const existingInstance = this.sessions.get(sessionId);
         if (existingInstance) {
+            if (existingInstance.tenantId !== session.tenantId || existingInstance.userId !== session.userId) {
+                throw new Error("WhatsApp session binding changed");
+            }
             if (existingInstance.status === "CONNECTED" || existingInstance.status === "SCAN_QR") return;
             await existingInstance.init();
             return;
         }
 
-        const session = await prisma.session.findUnique({ where: { sessionId } });
-        if (!session) throw new Error("Session not found");
-
-        if (!(await this.acquireSessionLease(sessionId))) {
+        if (!(await this.acquireSessionLease(sessionId, session.tenantId))) {
             throw new Error("WhatsApp session is active on another replica");
         }
 
-        const instance = new WhatsAppInstance(sessionId, session.userId, this.io!);
+        const instance = new WhatsAppInstance(sessionId, session.userId, session.tenantId, this.io!);
         instance.onRemovedFromManager = () => {
             this.removeInstance(sessionId, instance);
             void this.releaseSessionLease(sessionId);
@@ -239,6 +264,7 @@ export class WhatsAppManager {
     }
 
     async shutdownAll() {
+        for (const sessionId of this.leaseRetries.keys()) this.cancelLeaseRetry(sessionId);
         const entries = [...this.sessions.entries()];
         await Promise.all(entries.map(async ([sessionId, instance]) => {
             await instance.shutdown();
@@ -247,7 +273,51 @@ export class WhatsAppManager {
         }));
     }
 
-    private async acquireSessionLease(sessionId: string) {
+    private cancelLeaseRetry(sessionId: string) {
+        const retry = this.leaseRetries.get(sessionId);
+        if (!retry) return;
+        retry.cancelled = true;
+        clearTimeout(retry.timer);
+        this.leaseRetries.delete(sessionId);
+    }
+
+    private scheduleLeaseRetry(sessionId: string, tenantId: string) {
+        if (this.leaseRetries.has(sessionId)) return;
+        const retry = { timer: null as unknown as ReturnType<typeof setTimeout>, cancelled: false };
+        retry.timer = setTimeout(() => {
+            void (async () => {
+                let shouldRetry = false;
+                try {
+                    const session = await prisma.session.findUnique({
+                        where: { sessionId },
+                        select: { sessionId: true, tenantId: true, userId: true, status: true },
+                    });
+                    if (retry.cancelled || !session || session.tenantId !== tenantId ||
+                        session.status === "STOPPED" || session.status === "LOGGED_OUT") return;
+                    if (!(await prisma.session.findUnique({
+                        where: activeWhatsAppSessionWhere({ sessionId, tenantId, userId: session.userId }),
+                        select: { id: true },
+                    }))) return;
+                    if (retry.cancelled || this.sessions.has(sessionId)) return;
+                    await this.startSession(sessionId);
+                    logger.info("Manager", `Recovered Baileys session ${sessionId} after its lease became available.`);
+                } catch (error) {
+                    if (error instanceof Error && error.message === "WhatsApp session is active on another replica") {
+                        shouldRetry = true;
+                    } else if (!retry.cancelled) {
+                        logger.error("Manager", `Lease recovery failed for session ${sessionId}.`, error);
+                    }
+                } finally {
+                    if (this.leaseRetries.get(sessionId) === retry) this.leaseRetries.delete(sessionId);
+                    if (shouldRetry && !retry.cancelled) this.scheduleLeaseRetry(sessionId, tenantId);
+                }
+            })();
+        }, SESSION_LEASE_RETRY_MS);
+        retry.timer.unref?.();
+        this.leaseRetries.set(sessionId, retry);
+    }
+
+    private async acquireSessionLease(sessionId: string, tenantId: string) {
         const leaseToken = randomUUID();
         const now = new Date();
         const leaseUntil = new Date(now.getTime() + SESSION_LEASE_MS);
@@ -255,6 +325,7 @@ export class WhatsAppManager {
         let acquired = await prisma.whatsAppSessionLease.updateMany({
             where: {
                 sessionId,
+                tenantId,
                 OR: [
                     { ownerId: this.workerId },
                     { leaseUntil: { lte: now } }
@@ -269,20 +340,16 @@ export class WhatsAppManager {
         });
 
         if (acquired.count === 0) {
-            try {
-                await prisma.whatsAppSessionLease.create({
-                    data: { sessionId, ownerId: this.workerId, leaseToken, leaseUntil }
-                });
-                acquired = { count: 1 };
-            } catch (error: unknown) {
-                // Another replica may have created the row between the update
-                // and create. It remains the owner unless the lease is expired.
-                if (!(error && typeof error === "object" && "code" in error && error.code === "P2002")) throw error;
-                acquired = await prisma.whatsAppSessionLease.updateMany({
-                    where: { sessionId, leaseUntil: { lte: new Date() } },
-                    data: { ownerId: this.workerId, leaseToken, leaseUntil, fencingToken: { increment: 1 } }
-                });
-            }
+            // Concurrent owners are expected: skip the existing primary key
+            // instead of raising an expected P2002 in Prisma's error logger.
+            const created = await prisma.whatsAppSessionLease.createMany({
+                data: [{ sessionId, tenantId, ownerId: this.workerId, leaseToken, leaseUntil }],
+                skipDuplicates: true,
+            });
+            acquired = created.count > 0 ? { count: 1 } : await prisma.whatsAppSessionLease.updateMany({
+                where: { sessionId, tenantId, leaseUntil: { lte: new Date() } },
+                data: { ownerId: this.workerId, leaseToken, leaseUntil, fencingToken: { increment: 1 } },
+            });
         }
 
         if (acquired.count === 0) return false;
@@ -291,36 +358,42 @@ export class WhatsAppManager {
         const existingTimer = this.leaseTimers.get(sessionId);
         if (existingTimer) clearInterval(existingTimer);
         const timer = setInterval(() => {
-            void this.renewSessionLease(sessionId, leaseToken);
+            void this.renewSessionLease(sessionId, tenantId, leaseToken);
         }, SESSION_LEASE_RENEW_MS);
         timer.unref?.();
         this.leaseTimers.set(sessionId, timer);
         return true;
     }
 
-    private async renewSessionLease(sessionId: string, leaseToken: string) {
+    private async renewSessionLease(sessionId: string, tenantId: string, leaseToken: string) {
+        if (this.leaseTokens.get(sessionId) !== leaseToken) return;
+        const instance = this.sessions.get(sessionId);
         let renewed: { count: number };
         try {
-            renewed = await prisma.whatsAppSessionLease.updateMany({
+            const session = instance?.tenantId === tenantId ? await prisma.session.findUnique({
+                where: activeWhatsAppSessionWhere(instance),
+                select: { id: true },
+            }) : null;
+            renewed = session ? await prisma.whatsAppSessionLease.updateMany({
                 where: {
                     sessionId,
+                    tenantId,
                     ownerId: this.workerId,
                     leaseToken,
                     leaseUntil: { gt: new Date() }
                 },
                 data: { leaseUntil: new Date(Date.now() + SESSION_LEASE_MS) }
-            });
+            }) : { count: 0 };
         } catch (error) {
             logger.error("Manager", `Unable to renew distributed Baileys lease for session ${sessionId}; stopping local instance.`, error);
             renewed = { count: 0 };
         }
-        if (renewed.count > 0) return;
+        if (renewed.count > 0 || this.leaseTokens.get(sessionId) !== leaseToken) return;
 
         const timer = this.leaseTimers.get(sessionId);
         if (timer) clearInterval(timer);
         this.leaseTimers.delete(sessionId);
         this.leaseTokens.delete(sessionId);
-        const instance = this.sessions.get(sessionId);
         if (instance) {
             logger.error("Manager", `Lost distributed Baileys lease for session ${sessionId}; stopping local instance.`);
             await instance.shutdown().catch((error) => logger.error("Manager", `Failed to stop session ${sessionId} after lease loss.`, error));

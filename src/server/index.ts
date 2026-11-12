@@ -3,7 +3,6 @@ import { loadEnvConfig } from "@next/env";
 loadEnvConfig(process.cwd());
 
 import { createServer } from "http";
-import { parse } from "url";
 import next from "next";
 import { Server } from "socket.io";
 import { setupSocket } from "./socket";
@@ -20,6 +19,7 @@ const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
 const port = parseInt(process.env.PORT || "3030", 10);
 const basePath = "";
+const safeLocalMode = process.env.WA_AKG_SAFE_LOCAL_MODE === "true";
 
 const INSECURE_AUTH_SECRETS = [
   "change-me",
@@ -68,16 +68,35 @@ app.prepare().then(async () => {
   }
 
   const server = createServer(async (req, res) => {
+    let requestPath = "/";
     try {
       if (!req.url) return;
-      const parsedUrl = parse(req.url, true);
+      const requestUrl = new URL(req.url, "http://localhost");
+      requestPath = requestUrl.pathname;
+      const query: Record<string, string | string[]> = Object.create(null);
+      requestUrl.searchParams.forEach((value, key) => {
+        const existing = query[key];
+        query[key] = existing === undefined
+          ? value
+          : Array.isArray(existing)
+            ? [...existing, value]
+            : [existing, value];
+      });
+      const parsedUrl = { pathname: requestUrl.pathname, query };
       if (handleMcpHttp && (parsedUrl.pathname === mcpEndpointPath || parsedUrl.pathname === `${mcpEndpointPath}/`)) {
         await handleMcpHttp(req, res);
         return;
       }
       await handle(req, res, parsedUrl);
     } catch (err) {
-      logger.error("Server", "Error handling", req.url, err);
+      const disconnected = req.aborted || res.destroyed || res.writableEnded ||
+        (err instanceof Error && (err.name === "AbortError" || err.message === "aborted"));
+      if (disconnected) {
+        logger.debug("Server", `Client disconnected before response: ${req.method} ${requestPath}`);
+        return;
+      }
+      logger.error("Server", "Error handling", req.method, requestPath, err);
+      if (res.destroyed || res.writableEnded) return;
       res.statusCode = 500;
       res.end("internal server error");
     }
@@ -112,18 +131,22 @@ app.prepare().then(async () => {
     }
   });
 
-  const socketAdapter = await configureSocketIoAdapter(io);
+  const socketAdapter = safeLocalMode ? null : await configureSocketIoAdapter(io);
   setupSocket(io);
   // Optional: Global instance for Baileys to emit events
   global.io = io;
 
   // Initialize WhatsApp Manager
   waManager.setup(io);
+  if (safeLocalMode) {
+    logger.info("Server", "Safe local mode: automatic session restore and outbound worker disabled.");
+  } else {
   void waManager.loadSessions().then(() => {
     startOutboundMessageWorker();
   }).catch(error => {
     logger.error("Server", "Unable to initialize outbound message worker", error);
   });
+  }
   server.on("close", () => {
     void waManager.shutdownAll();
     stopOutboundMessageWorker();
@@ -131,20 +154,20 @@ app.prepare().then(async () => {
   });
 
   // Start Scheduler
-  import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
+  if (!safeLocalMode) import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
 
   // Cloudflare 520 Fix: increase keep-alive timeout so Node doesn't kill idle connections that Cloudflare expects to reuse
   // See: https://github.com/vercel/next.js/issues/48962
   server.keepAliveTimeout = 120 * 1000; // 120 seconds
   server.headersTimeout = 120 * 1000; // 120 seconds
 
-  server.listen(port, () => {
+  const onListening = () => {
     logger.banner(pkg.name.toUpperCase(), pkg.version, port);
 
     // --- WA-AKG Monitor Heartbeat ---
     // Sends a ping every 30 seconds to the monitoring server
     // Telemetry opt-out is supported via ENABLE_TELEMETRY="false" or DISABLE_TELEMETRY="true"
-    const isTelemetryEnabled = process.env.ENABLE_TELEMETRY !== "false" && process.env.DISABLE_TELEMETRY !== "true";
+    const isTelemetryEnabled = !safeLocalMode && process.env.ENABLE_TELEMETRY !== "false" && process.env.DISABLE_TELEMETRY !== "true";
 
     if (isTelemetryEnabled) {
       const MONITOR_URL = "https://api-wa-akg.aikeigroup.net/api/ping";
@@ -181,5 +204,7 @@ app.prepare().then(async () => {
       logger.info("Server", "Telemetry heartbeat is disabled via environment configuration.");
     }
     // --------------------------------
-  });
+  };
+  if (safeLocalMode) server.listen(port, "127.0.0.1", onListening);
+  else server.listen(port, onListening);
 });

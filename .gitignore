@@ -56,6 +56,10 @@ server.log
 .claude-flow/logs/
 .claude-flow/sessions/
 
+# Local operational evidence and generated delivery archives
+/.remote-desktop/
+/*.zip
+
 # Security: operational backup material and private age identities never belong in Git
 /backups/
 **/.age-backup-key

@@ -14,6 +14,7 @@ import {
 import crypto from "crypto";
 import { logger } from "@/lib/logger";
 import { getBrandConfig } from "@/lib/branding-server";
+import { normalizeOutboundJid } from "@/lib/jid-utils";
 
 export interface NativeButtonQuickReply {
     type?: "quick_reply";
@@ -778,14 +779,10 @@ export async function sendEventMessage(
  */
 export function normalizeTargetJid(jid: string): string {
     if (!jid) return jid;
-    if (jid.endsWith("@g.us") || jid.endsWith("@newsletter")) {
-        return jid;
-    }
-    const clean = jid.replace(/[^0-9]/g, "");
-    if (jid.includes("@")) {
-        return jidNormalizedUser(jid);
-    }
-    return `${clean}@s.whatsapp.net`;
+    const normalized = normalizeOutboundJid(jid);
+    return normalized.includes("@") && !normalized.endsWith("@lid")
+        ? jidNormalizedUser(normalized)
+        : normalized;
 }
 
 /**

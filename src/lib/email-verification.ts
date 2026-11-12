@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import nodemailer from "nodemailer";
+import { sendTransactionalEmail } from "@/lib/mail-delivery";
 import { prisma } from "@/lib/prisma";
 import { normalizeBasePath, withBasePath } from "@/lib/base-path";
 import { getBrandConfig } from "@/lib/branding-server";
+import { writeEmailVerificationLog } from "@/lib/email-verification-log";
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const HOURLY_LIMIT = 3;
@@ -21,18 +23,24 @@ export async function sendVerificationEmail(
   requestUrl: URL,
   transportFactory: typeof nodemailer.createTransport = nodemailer.createTransport,
   requestBasePath = "",
+  logWriter: typeof writeEmailVerificationLog = writeEmailVerificationLog,
+  httpClient: typeof fetch = fetch,
 ) {
   const now = new Date();
   const [hourlyCount, dailyCount] = await Promise.all([
     prisma.emailVerificationToken.count({ where: { userId: user.id, createdAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } } }),
     prisma.emailVerificationToken.count({ where: { userId: user.id, createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } } }),
   ]);
-  if (!isVerificationResendAllowed(hourlyCount, dailyCount)) return { sent: false, limited: true };
+  if (!isVerificationResendAllowed(hourlyCount, dailyCount)) {
+    await logWriter({ email: user.email, userId: user.id, status: "rate_limited" });
+    return { sent: false, limited: true };
+  }
 
   const token = randomBytes(32).toString("base64url");
   const record = await prisma.emailVerificationToken.create({
     data: { userId: user.id, tokenHash: hash(token), expiresAt: new Date(now.getTime() + TOKEN_TTL_MS) },
   });
+  await logWriter({ email: user.email, userId: user.id, verificationId: record.id, status: "created", expiresAt: new Date(now.getTime() + TOKEN_TTL_MS).toISOString() });
   const configuredPublicUrl = process.env.BASE_URL || process.env.OAUTH_ISSUER_URL;
   if (!configuredPublicUrl && process.env.NODE_ENV === "production") throw new Error("BASE_URL must be configured in production");
   const publicUrl = configuredPublicUrl ? new URL(configuredPublicUrl) : requestUrl;
@@ -44,34 +52,20 @@ export async function sendVerificationEmail(
   try {
     const brand = await getBrandConfig();
     const escapedBrandName = escapeHtml(brand.name);
-    const host = process.env.SMTP_HOST;
-    const from = process.env.SMTP_FROM;
-    if (!host || !from) throw new Error("SMTP is not configured");
-    const port = Number(process.env.SMTP_PORT || 587);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SMTP port");
-    const secure = process.env.SMTP_SECURE === "true";
-    const userName = process.env.SMTP_USER;
-    const password = process.env.SMTP_PASSWORD;
-    if (Boolean(userName) !== Boolean(password)) throw new Error("SMTP credentials must be configured together");
-    const transporter = transportFactory({
-      host,
-      port,
-      secure,
-      ...(userName && password ? { auth: { user: userName, pass: password } } : {}),
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 15_000,
-    });
-    await transporter.sendMail({
-      from,
+    await sendTransactionalEmail({
       to: user.email,
       subject: "Confirm your " + brand.name + " account",
       text: "Hello" + (user.name ? " " + user.name : "") + ",\n\nWelcome to " + brand.name + ". Confirm your email address by opening this link and choosing Confirm:\n" + link + "\n\nThis link expires in 24 hours. If you did not create this account, you can ignore this email.",
       html: "<p>Hello" + (user.name ? " " + escapeHtml(user.name) : "") + ",</p><p>Welcome to " + escapedBrandName + ". Confirm your email address by opening this link and choosing <strong>Confirm</strong>:</p><p><a href=\"" + escapeHtml(link.toString()) + "\">Confirm email address</a></p><p>This link expires in 24 hours. If you did not create this account, you can ignore this email.</p>",
-    });
+    }, transportFactory, httpClient, `verification-${record.id}`);
+    await logWriter({ email: user.email, userId: user.id, verificationId: record.id, status: "sent" });
     return { sent: true, limited: false };
   } catch (error) {
-    await prisma.emailVerificationToken.updateMany({ where: { id: record.id, consumedAt: null }, data: { consumedAt: new Date() } });
+    const localRecovery = process.env.NODE_ENV === "development" && process.env.EMAIL_VERIFICATION_LOCAL_RECOVERY === "true";
+    if (!localRecovery) {
+      await prisma.emailVerificationToken.updateMany({ where: { id: record.id, consumedAt: null }, data: { consumedAt: new Date() } });
+    }
+    await logWriter({ email: user.email, userId: user.id, verificationId: record.id, status: "delivery_failed", expiresAt: new Date(now.getTime() + TOKEN_TTL_MS).toISOString(), ...(localRecovery ? { recoveryUrl: link.toString() } : {}), errorCode: "EMAIL_DELIVERY_FAILED" });
     throw error;
   }
 }

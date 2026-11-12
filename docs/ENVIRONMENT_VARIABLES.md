@@ -34,9 +34,9 @@ Settings that manage OAuth flow, reverse proxies, and public-facing URL compilat
 | `NEXT_PUBLIC_APP_URL` | string | `${BASE_URL}` | Public facing client URL. |
 | `NEXT_PUBLIC_API_URL` | string | `${BASE_URL}/api` | Public facing API endpoint URL. |
 
-### Email verification (SMTP)
+### Email verification (Resend API or SMTP)
 
-Public registration requires email confirmation. Configure an SMTP server to deliver verification links. Set `SMTP_SECURE=true` for implicit TLS (typically port 465); otherwise Nodemailer uses SMTP submission and STARTTLS when offered (typically port 587). Authentication is used only when both username and password are set. Resend is limited to 3 messages per account per hour and 10 per day.
+Public registration requires email confirmation. When `RESEND_API_KEY` is configured, verification emails use the Resend API and require `MAIL_FROM` with a verified sender domain. When `RESEND_API_KEY` is absent or empty, the existing SMTP transport is used. Delivery failures do not trigger automatic cross-provider retries, avoiding duplicate emails. The per-account resend-verification route is limited to 3 messages per hour and 10 per day. Set `SMTP_SECURE=true` for implicit TLS (typically port 465); otherwise Nodemailer uses SMTP submission and STARTTLS when offered (typically port 587). Authentication is used only when both username and password are set. All credentials are server-only.
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -45,7 +45,11 @@ Public registration requires email confirmation. Configure an SMTP server to del
 | `SMTP_SECURE` | boolean | `false` | Use implicit TLS when `true`; otherwise Nodemailer may negotiate STARTTLS. |
 | `SMTP_USER` | string | — | Optional SMTP authentication username. Set together with `SMTP_PASSWORD`. |
 | `SMTP_PASSWORD` | string | — | Optional SMTP authentication password. Never expose this value to clients. |
-| `SMTP_FROM` | address | — | Required sender address, for example `WA-AKG <no-reply@example.com>`. |
+| `SMTP_FROM` | address | — | Required sender address when using SMTP, for example `ConectaFlow <no-reply@example.com>`. |
+| `RESEND_API_KEY` | secret | — | Optional Resend API key. When nonempty, Resend is the selected delivery provider. Keep server-side only. |
+| `MAIL_FROM` | address | — | Required when using Resend; use a sender address at a domain verified with Resend. |
+
+`TOKEN_ENCRYPTION_KEY` is not used by this email delivery integration and must not be substituted for `RESEND_API_KEY`.
 
 ---
 
@@ -109,6 +113,9 @@ Rate limiting parameters and upload size thresholds.
 | `ENABLE_RATE_LIMITING` | boolean | `true` | Protect API endpoints from brute-force/abuse via rate limits. |
 | `RATE_LIMIT_PER_MINUTE` | number | `60` | Max requests allowed per minute per IP address. |
 | `WA_AKG_AUTH_STATE_KEY` | string | — | Dedicated encryption key for Baileys AuthState; required in production and separate from `AUTH_SECRET`. |
+| `CHANNEL_IDENTITY_LINKING_ENABLED` | boolean | `false` | Enables the WhatsApp identity challenge and authenticated link endpoints. Keep disabled until origin, connector, retention, and enforcement gates are approved. |
+| `CHANNEL_IDENTITY_HMAC_KEY` | string | — | Dedicated random secret (at least 32 UTF-8 bytes) used to HMAC canonical WhatsApp JIDs. Do not reuse `AUTH_SECRET`; changing it requires a planned reindex. |
+| `WA_AKG_CHANNEL_LINK_TOKEN` | string | — | Dedicated bearer credential for the trusted inbound integration calling the challenge endpoint. Never expose to browsers or logs. |
 | `WA_AKG_TRUSTED_PROXY_HEADERS` | `false` | `false` | Set to `true` only when a private/trusted reverse proxy replaces forwarded client headers; enables per-client forwarded-IP rate-limit buckets. |
 | `SOCKET_IO_DISTRIBUTED` | boolean | `false` | Require the Socket.IO Redis adapter for multi-replica deployments. Fails startup when enabled without Redis configuration. |
 | `SOCKET_IO_REDIS_URL` | string | — | Private `redis://` or `rediss://` endpoint used for cross-replica Socket.IO broadcasts. Never log this value. |

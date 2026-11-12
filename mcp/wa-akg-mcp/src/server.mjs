@@ -10,7 +10,10 @@ const defaultSpecPath = path.resolve(here, "../../../swagger.json");
 const specPath = process.env.WA_AKG_OPENAPI_PATH ? path.resolve(process.env.WA_AKG_OPENAPI_PATH) : defaultSpecPath;
 const apiKey = process.env.WA_AKG_API_KEY?.trim();
 const timeoutMs = boundedInteger(process.env.WA_AKG_TIMEOUT_MS, 15000, 1000, 120000);
+const mediaTimeoutMs = boundedInteger(process.env.WA_AKG_MEDIA_TIMEOUT_MS, 120000, 1000, 300000);
 const maxResponseBytes = boundedInteger(process.env.WA_AKG_MAX_RESPONSE_BYTES, 1000000, 1024, 10000000);
+export const MAX_MCP_MEDIA_BYTES = 16 * 1024 * 1024;
+const MAX_MCP_MEDIA_BASE64_LENGTH = Math.ceil(MAX_MCP_MEDIA_BYTES / 3) * 4;
 const remoteApiAllowed = process.env.WA_AKG_MCP_ALLOW_REMOTE_API === "true";
 const LOCAL_SCOPE_NAMES = new Set(["api:read", "api:write", "mcp:read", "mcp:write", "sessions:read"]);
 
@@ -103,16 +106,93 @@ function parameterSchema(parameter) {
   if (Array.isArray(schema.enum) && schema.enum.length) value = z.enum(schema.enum.map(String));
   return parameter.required ? value : value.optional();
 }
-function createInputSchema(operation) {
+
+function multipartBinaryProperty(operation) {
+  const schema = operation.requestBody?.content?.["multipart/form-data"]?.schema;
+  if (!schema || schema.type !== "object") return null;
+  const binaryProperties = Object.entries(schema.properties ?? {}).filter(([, value]) => value?.format === "binary");
+  if (binaryProperties.length !== 1) return null;
+  return { schema, property: binaryProperties[0][0] };
+}
+
+export function createInputSchema(operation) {
   const shape = {};
   for (const parameter of operation.parameters ?? []) {
     if (!parameter?.name || !["path", "query", "header"].includes(parameter.in)) continue;
     shape[parameter.name] = parameterSchema(parameter);
   }
-  if (operation.requestBody) shape.body = operation.requestBody.required === true
-    ? z.record(z.string(), z.unknown())
-    : z.record(z.string(), z.unknown()).optional();
+  if (operation.requestBody) {
+    const multipart = multipartBinaryProperty(operation);
+    if (multipart) {
+      const required = new Set(multipart.schema.required ?? []);
+      const bodyShape = {
+        fileBase64: z.string().min(4).max(MAX_MCP_MEDIA_BASE64_LENGTH)
+          .describe(`Raw standard Base64 file bytes (maximum ${MAX_MCP_MEDIA_BYTES} decoded bytes; do not include a data URL prefix).`),
+        fileName: z.string().min(1).max(255).describe("Original file name, including extension."),
+        mimeType: z.string().min(1).max(255).describe("Verified MIME type, such as image/jpeg or image/png."),
+      };
+      for (const [name, propertySchema] of Object.entries(multipart.schema.properties ?? {})) {
+        if (name === multipart.property) continue;
+        let value = parameterSchema({ schema: propertySchema, required: required.has(name) });
+        if (propertySchema?.description) value = value.describe(propertySchema.description);
+        bodyShape[name] = value;
+      }
+      shape.body = z.object(bodyShape).describe("File data and multipart form fields. The MCP adapter converts the Base64 file to multipart/form-data for WA-AKG.");
+    } else {
+      shape.body = operation.requestBody.required === true
+        ? z.record(z.string(), z.unknown())
+        : z.record(z.string(), z.unknown()).optional();
+    }
+  }
   return shape;
+}
+
+export function createMultipartFormData(operation, input, maxFileBytes = MAX_MCP_MEDIA_BYTES) {
+  const multipart = multipartBinaryProperty(operation);
+  if (!multipart || !input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("This operation does not accept a single-file multipart upload");
+  }
+
+  const { fileBase64, fileName, mimeType, ...fields } = input;
+  if (typeof fileBase64 !== "string" || fileBase64.length < 4 || fileBase64.length > MAX_MCP_MEDIA_BASE64_LENGTH || fileBase64.length % 4 !== 0) {
+    throw new TypeError("fileBase64 must contain a standard Base64 file of at most 16 MiB");
+  }
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(fileBase64)) {
+    throw new TypeError("fileBase64 is not valid standard Base64");
+  }
+  if (typeof fileName !== "string" || !fileName.trim() || fileName.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(fileName)) {
+    throw new TypeError("fileName must be a plain file name of at most 255 characters");
+  }
+  if (typeof mimeType !== "string" || mimeType.length > 255 || !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(mimeType)) {
+    throw new TypeError("mimeType must be a valid media type");
+  }
+
+  const bytes = Buffer.from(fileBase64, "base64");
+  if (bytes.length === 0 || bytes.length > maxFileBytes || bytes.toString("base64") !== fileBase64) {
+    throw new TypeError(`Decoded media file must be between 1 and ${maxFileBytes} bytes`);
+  }
+
+  const properties = multipart.schema.properties ?? {};
+  const allowedFields = new Set(Object.keys(properties).filter((name) => name !== multipart.property));
+  const unknownFields = Object.keys(fields).filter((name) => !allowedFields.has(name));
+  if (unknownFields.length) throw new TypeError(`Unsupported multipart field: ${unknownFields[0]}`);
+  for (const name of allowedFields) {
+    if ((multipart.schema.required ?? []).includes(name) && fields[name] === undefined) {
+      throw new TypeError(`Missing required multipart field: ${name}`);
+    }
+    const value = fields[name];
+    if (value !== undefined && value !== null && typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+      throw new TypeError(`Multipart field ${name} must be a scalar value`);
+    }
+  }
+
+  const form = new FormData();
+  form.append(multipart.property, new Blob([bytes], { type: mimeType }), fileName.trim());
+  for (const name of allowedFields) {
+    const value = fields[name];
+    if (value !== undefined && value !== null) form.append(name, String(value));
+  }
+  return form;
 }
 export function isAllowedOperation(method, route, authContext) {
   const effectiveAuthContext = authContext ?? localCredentialContext();
@@ -189,19 +269,28 @@ function buildUrl(baseUrl, route, operation, args) {
   }
   return url;
 }
-async function callApi(method, route, operation, args, authContext) {
+export async function callApi(method, route, operation, args, authContext) {
   const baseUrl = safeBaseUrl();
   const url = buildUrl(baseUrl, route, operation, args);
   const headers = addNgrokSkipWarningHeader({ Accept: "application/json" }, url);
-  if (authContext?.accessToken) headers.Authorization = `Bearer ${authContext.accessToken}`;
-  else if (apiKey) headers["X-API-Key"] = apiKey;
+  if (authContext?.authMethod === "oauth-user-delegation") {
+    const accessToken = authContext.accessToken;
+    if (!accessToken) throw new Error("OAuth request credential is unavailable");
+    headers.Authorization = `Bearer ${accessToken}`;
+  } else if (apiKey) headers["X-API-Key"] = apiKey;
   let body;
+  let requestTimeoutMs = timeoutMs;
   if (operation.requestBody && args.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(args.body);
+    if (multipartBinaryProperty(operation)) {
+      body = createMultipartFormData(operation, args.body);
+      requestTimeoutMs = mediaTimeoutMs;
+    } else {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(args.body);
+    }
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
     const response = await fetch(url, { method: method.toUpperCase(), headers, body, signal: controller.signal, redirect: "error" });
     const contentType = response.headers.get("content-type") ?? "";
@@ -220,7 +309,7 @@ async function callApi(method, route, operation, args, authContext) {
     }
     return { status: response.status, data };
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`WA-AKG API request timed out after ${timeoutMs} ms`);
+    if (error?.name === "AbortError") throw new Error(`WA-AKG API request timed out after ${requestTimeoutMs} ms`);
     if (error instanceof TypeError) throw new Error("Could not connect to WA-AKG API; check WA_AKG_API_BASE_URL and whether the API is running");
     throw error;
   } finally { clearTimeout(timeout); }
@@ -238,8 +327,9 @@ function registerApiTools(spec, targetServer = server, authContext) {
       const description = [
         operation.summary ?? `${methodLabel} ${route}`,
         `WA-AKG API operation: ${methodLabel} ${route}.`,
+        multipartBinaryProperty(operation) ? `For the file, provide body.fileBase64 as raw standard Base64 plus body.fileName and body.mimeType. The MCP adapter converts it to multipart/form-data (maximum ${MAX_MCP_MEDIA_BYTES} decoded bytes).` : "",
         method === "get" ? "Read operation. Session ownership and OAuth scopes are enforced by WA-AKG." : "Write operation. This changes WA-AKG data or may trigger external WhatsApp/webhook effects; OAuth write scopes, session ownership and WA-AKG role checks are enforced by the API."
-      ].join(" ");
+      ].filter(Boolean).join(" ");
       targetServer.registerTool(name, {
         title: operation.summary ?? name,
         description,

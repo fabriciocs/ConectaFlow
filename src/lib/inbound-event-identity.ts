@@ -111,7 +111,14 @@ export function buildInboundEventIdentity(
     data: unknown,
 ): InboundEventIdentity {
     const payloadHash = sha256Hex(stableJsonStringify({ data: canonicalInboundPayload(data), event }));
-    const originalMessageId = extractOriginalMessageId(data) ?? `${event}:${payloadHash.slice(0, 32)}`;
+    // `data.id` is not a unique event id for non-message events. For example,
+    // Baileys group.update uses the group JID, which stays constant across
+    // distinct updates. Message events retain their source message id; other
+    // events use their canonical payload so later updates do not collide.
+    const sourceMessageId = event.startsWith("message.")
+        ? extractOriginalMessageId(data)
+        : undefined;
+    const originalMessageId = sourceMessageId ?? `${event}:${payloadHash.slice(0, 32)}`;
     const idempotencyKey = sha256Hex(`${sessionId}\u0000${event}\u0000${originalMessageId}\u0000${payloadHash}`);
     const eventId = `evt_${idempotencyKey.slice(0, 48)}`;
     const correlationId = `corr_${idempotencyKey}`;

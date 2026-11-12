@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { GET as getAuthorizationServerMetadata } from "@/app/.well-known/oauth-authorization-server/route";
 import { GET as getProtectedResourceMetadata } from "@/app/.well-known/oauth-protected-resource/route";
 import { proxy } from "@/proxy";
+import { GET as getLegacyAuthorizeRoute } from "@/app/authorize/route";
 import { resourceMatchesPublicOrigin } from "../oauth/discovery.mjs";
 
 test("authorization-server metadata advertises only implemented grants", async (t) => {
@@ -25,6 +26,7 @@ test("authorization-server metadata advertises only implemented grants", async (
   assert.deepEqual(metadata.grant_types_supported, ["authorization_code", "refresh_token"]);
   assert.equal(metadata.registration_endpoint, "https://wa-akg.example.test/api/oauth/register");
   assert.equal(metadata.authorization_response_iss_parameter_supported, true);
+  assert.equal(metadata.client_id_metadata_document_supported, true);
   assert.equal(metadata.grant_types_supported.includes("client_credentials"), false);
 });
 
@@ -98,4 +100,33 @@ test("OAuth protocol endpoints pass through proxy before route-level authorizati
   const response = await proxy(request);
   assert.equal(response.headers.get("x-middleware-next"), "1");
   assert.equal(response.headers.get("location"), null);
+});
+
+test("legacy /authorize redirects into canonical PKCE route without losing parameters", async () => {
+  const query = "?response_type=code&client_id=fixture-client&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&state=fixture-state&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback";
+  const response = await proxy(new NextRequest("http://127.0.0.1:43000/authorize" + query, {
+    headers: {
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "oauth.example.test",
+      "x-forwarded-prefix": "/wa-akg",
+    },
+  }));
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("location"), "https://oauth.example.test/wa-akg/api/oauth/authorize" + query);
+});
+
+test("actual Next route /authorize redirects legacy clients without changing PKCE parameters", () => {
+  const query = "?response_type=code&client_id=fixture-client&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&state=fixture-state";
+  const request = new NextRequest("http://127.0.0.1:43000/authorize" + query, {
+    headers: {
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "oauth.example.test",
+      "x-forwarded-prefix": "/wa-akg",
+    },
+  });
+  const response = getLegacyAuthorizeRoute(request);
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("location"), "https://oauth.example.test/wa-akg/api/oauth/authorize" + query);
 });

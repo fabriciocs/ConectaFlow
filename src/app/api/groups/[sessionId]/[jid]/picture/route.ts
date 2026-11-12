@@ -2,6 +2,8 @@ import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
 import { errorMessage } from "@/lib/error-message";
+import { MultipartLimitError, readBoundedMultipartForm } from "@/lib/multipart-limits";
+import sharp from "sharp";
 
 // PUT: Update group picture
 export async function PUT(
@@ -16,18 +18,21 @@ export async function PUT(
 
         const { sessionId, jid } = await params;
         const decodedJid = decodeURIComponent(jid);
-        const formData = await request.formData();
+        const canAccess = await canAccessSession(user, request, sessionId);
+        if (!canAccess) {
+            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session" }, { status: 403 });
+        }
+        const formData = await readBoundedMultipartForm(request, 8 * 1024 * 1024);
         const file = formData.get("file") as File;
 
-        if (!file) {
-            return NextResponse.json({ status: false, message: "file is required", error: "file is required" }, { status: 400 });
+        if (!(file instanceof File) || file.size === 0 || !["image/jpeg", "image/png"].includes(file.type)) {
+            return NextResponse.json({ status: false, message: "Valid JPEG or PNG is required" }, { status: 400 });
+        }
+        if (file.size > 8 * 1024 * 1024) {
+            return NextResponse.json({ status: false, message: "Image too large" }, { status: 413 });
         }
 
-        // Check if user can access this session
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
-        if (!canAccess) {
-            return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
-        }
+
 
         const instance = waManager.getInstance(sessionId);
         if (!instance?.socket) {
@@ -36,6 +41,14 @@ export async function PUT(
 
         // Convert File to Buffer
         const buffer = Buffer.from(await file.arrayBuffer());
+        try {
+            const metadata = await sharp(buffer, { limitInputPixels: 4096 * 4096 }).metadata();
+            if (!metadata.width || !metadata.height || metadata.width > 4096 || metadata.height > 4096) {
+                return NextResponse.json({ status: false, message: "Image dimensions exceed policy" }, { status: 400 });
+            }
+        } catch {
+            return NextResponse.json({ status: false, message: "Invalid or oversized image" }, { status: 400 });
+        }
 
         // Update group picture
         await instance.socket.updateProfilePicture(decodedJid, buffer);
@@ -43,7 +56,10 @@ export async function PUT(
         return NextResponse.json({ status: true, message: "Group picture updated successfully" });
 
     } catch (error: unknown) {
-        console.error("Update group picture error:", error);
+        if (error instanceof MultipartLimitError) {
+            return NextResponse.json({ status: false, message: error.message }, { status: error.status });
+        }
+        console.error("Update group picture error");
         const message = errorMessage(error, "");
         // Handle specific errors
         if (message.includes("not-admin") || message.includes("forbidden")) {
@@ -69,7 +85,7 @@ export async function DELETE(
         const decodedJid = decodeURIComponent(jid);
 
         // Check verification
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
+        const canAccess = await canAccessSession(user, request, sessionId);
         if (!canAccess) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }

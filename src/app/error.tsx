@@ -47,7 +47,7 @@ export default function ErrorPage({
 
         {/* Text Content */}
         <div className="relative text-center mb-10 w-full" suppressHydrationWarning>
-          <BrandMark className="mb-5 h-12 w-12 rounded-xl text-sm" />
+          <BrandMark homeLink className="mb-5 h-12 w-12 rounded-xl text-sm" />
           <p className="mb-2 text-sm font-semibold text-primary">{brand.name}</p>
           <h1 id="runtime-error-title" className="text-6xl font-black tracking-tight text-destructive font-mono mb-3 drop-shadow-sm" suppressHydrationWarning>
             Error 500

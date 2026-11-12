@@ -12,7 +12,6 @@ interface AntiSpamConfig {
 
 interface QueueItem {
     id: number;
-    jid: string;
     messageType: string;
     queuedAt: number;
     send: () => Promise<unknown>;
@@ -37,7 +36,7 @@ export class AntiSpamManager {
     }
 
     /** Resolve only after the actual Baileys send has completed. */
-    async enqueue<T>(sessionId: string, jid: string, content: unknown, send: () => Promise<T>): Promise<T> {
+    async enqueue<T>(sessionId: string, _recipientJid: string, content: unknown, send: () => Promise<T>): Promise<T> {
         const config = await this.getAntiSpamConfig(sessionId);
         if (!config.antiSpamEnabled) return send();
 
@@ -49,7 +48,6 @@ export class AntiSpamManager {
         const result = new Promise<T>((resolve, reject) => {
             queue.push({
                 id: ++this.messageCounter,
-                jid,
                 messageType: this.detectMessageType(content),
                 queuedAt: Date.now(),
                 send: () => send(),
@@ -81,7 +79,7 @@ export class AntiSpamManager {
                 } catch (error) {
                     queue.shift();
                     item.reject(error);
-                    logger.error("Anti-Spam", `Queued send ${item.id} failed for ${this.formatJid(item.jid)}`, error);
+                    logger.error("Anti-Spam", `Queued send ${item.id} failed`);
                 }
             }
         } finally {
@@ -151,12 +149,6 @@ export class AntiSpamManager {
             if (message[key]) return key;
         }
         return "other";
-    }
-
-    private formatJid(jid: string): string {
-        if (jid.endsWith("@s.whatsapp.net")) return jid.replace("@s.whatsapp.net", "");
-        if (jid.endsWith("@g.us")) return `group:${jid.replace("@g.us", "").slice(-6)}`;
-        return jid.slice(0, 15);
     }
 
     private sleep(ms: number) {

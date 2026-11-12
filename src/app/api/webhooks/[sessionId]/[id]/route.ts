@@ -1,10 +1,14 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { getAuthenticatedUser, isSessionOwner } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
+import { webhookScopedWhere, serializeAuthorizedWebhook } from "@/lib/webhook-access";
 import { getWebhookFilterUpdate } from "@/lib/webhook-filters";
+
 import { validateSafeUrl } from "@/lib/security";
-import { protectWebhookRequestHeaders, revealWebhookRequestHeaders } from "@/lib/webhook-headers";
+import { protectWebhookRequestHeaders } from "@/lib/webhook-headers";
+const privateHeaders = { "Cache-Control": "no-store" };
 
 export async function PUT(
     request: NextRequest,
@@ -17,8 +21,8 @@ export async function PUT(
     
     const { sessionId, id } = await params;
 
-    const isOwner = await isSessionOwner(user.id, user.role, sessionId);
-    if (!isOwner) {
+    const session = await getAuthorizedSession(user, request, sessionId);
+    if (!session) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
@@ -51,29 +55,9 @@ export async function PUT(
         try { filterUpdate = getWebhookFilterUpdate(body); }
         catch (error) { return NextResponse.json({ status: false, message: (error as Error).message }, { status: 400 }); }
 
-        const session = await prisma.session.findFirst({
-            where: {
-                OR: [
-                    { id: sessionId },
-                    { sessionId: sessionId }
-                ]
-            },
-            select: { id: true }
-        });
-
-        if (!session) {
-            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
-        }
-
         // Verify ownership and session context
         const existing = await prisma.webhook.findFirst({
-            where: {
-                id,
-                OR: [
-                    { sessionId: session.id },
-                    { sessionId: null, userId: user.id }
-                ]
-            }
+            where: webhookScopedWhere(session, user.id, id)
         });
 
         if (!existing) {
@@ -86,8 +70,8 @@ export async function PUT(
             return NextResponse.json({ status: false, message: `Invalid webhook URL: ${urlValidation.error}`, error: urlValidation.error }, { status: 400 });
         }
 
-        const webhook = await prisma.webhook.update({
-            where: { id },
+        const changed = await prisma.webhook.updateMany({
+            where: webhookScopedWhere(session, user.id, id),
             data: {
                 ...(name !== undefined && { name }),
                 ...(url !== undefined && { url }),
@@ -100,12 +84,12 @@ export async function PUT(
             }
         });
 
-        const safeWebhook = { ...webhook };
-        delete (safeWebhook as { secret?: string | null }).secret;
-        safeWebhook.requestHeaders = revealWebhookRequestHeaders(webhook.requestHeaders);
-        return NextResponse.json(safeWebhook);
-    } catch (error) {
-        console.error("Update webhook error:", error);
+        if (changed.count !== 1) return NextResponse.json({ status: false, message: "Webhook not found" }, { status: 404 });
+        const webhook = await prisma.webhook.findFirst({ where: webhookScopedWhere(session, user.id, id) });
+        if (!webhook) return NextResponse.json({ status: false, message: "Webhook not found" }, { status: 404 });
+        return NextResponse.json(serializeAuthorizedWebhook(webhook, user.authMethod), { headers: privateHeaders });
+    } catch {
+        console.error("Update webhook error");
         return NextResponse.json({ status: false, message: "Failed to update webhook", error: "Failed to update webhook" }, { status: 500 });
     }
 }
@@ -121,45 +105,27 @@ export async function DELETE(
     
     const { sessionId, id } = await params;
 
-    const isOwner = await isSessionOwner(user.id, user.role, sessionId);
-    if (!isOwner) {
+    const session = await getAuthorizedSession(user, request, sessionId);
+    if (!session) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
     try {
-        const session = await prisma.session.findFirst({
-            where: {
-                OR: [
-                    { id: sessionId },
-                    { sessionId: sessionId }
-                ]
-            },
-            select: { id: true }
-        });
-
-        if (!session) {
-            return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
-        }
 
         const existing = await prisma.webhook.findFirst({
-            where: {
-                id,
-                OR: [
-                    { sessionId: session.id },
-                    { sessionId: null, userId: user.id }
-                ]
-            }
+            where: webhookScopedWhere(session, user.id, id)
         });
 
         if (!existing) {
             return NextResponse.json({ status: false, message: "Webhook not found", error: "Webhook not found" }, { status: 404 });
         }
 
-        await prisma.webhook.delete({ where: { id } });
+        const deleted = await prisma.webhook.deleteMany({ where: webhookScopedWhere(session, user.id, id) });
+        if (deleted.count !== 1) return NextResponse.json({ status: false, message: "Webhook not found" }, { status: 404 });
 
         return NextResponse.json({ status: true, message: "Operation successful" });
-    } catch (error) {
-        console.error("Delete webhook error:", error);
+    } catch {
+        console.error("Delete webhook error");
         return NextResponse.json({ status: false, message: "Failed to delete webhook", error: "Failed to delete webhook" }, { status: 500 });
     }
 }

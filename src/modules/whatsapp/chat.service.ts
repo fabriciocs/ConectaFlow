@@ -25,6 +25,13 @@ interface OutboundMessagePayload extends Record<string, unknown> {
     mentions?: string[];
 }
 
+export class WhatsAppSessionUnavailableError extends Error {
+    constructor() {
+        super("WhatsApp session is disconnected or not found");
+        this.name = "WhatsAppSessionUnavailableError";
+    }
+}
+
 interface WebhookMessageShape {
     key: WAMessage["key"];
     message: Record<string, unknown>;
@@ -273,7 +280,7 @@ export class ChatService {
     static async sendTextMessage(sessionId: string, jid: string, messagePayload: OutboundMessagePayload, mentions?: string[], quotedMessageId?: string) {
         const instance = waManager.getInstance(sessionId);
         if (!instance || !instance.socket) {
-            throw new Error("WhatsApp session is disconnected or not found");
+            throw new WhatsAppSessionUnavailableError();
         }
 
         // Handle quoted/reply message
@@ -459,7 +466,7 @@ export class ChatService {
     ) {
         const instance = waManager.getInstance(sessionId);
         if (!instance || !instance.socket) {
-            throw new Error("WhatsApp session is disconnected or not found");
+            throw new WhatsAppSessionUnavailableError();
         }
 
         const messageOptions: { caption?: string; mimetype: string } = { mimetype };
@@ -534,7 +541,7 @@ export class ChatService {
     ) {
         const instance = waManager.getInstance(sessionId);
         if (!instance || !instance.socket) {
-            throw new Error("WhatsApp session is disconnected or not found");
+            throw new WhatsAppSessionUnavailableError();
         }
 
         const sendResult = await instance.socket.sendMessage(jid, {
@@ -569,7 +576,7 @@ export class ChatService {
     ) {
         const instance = waManager.getInstance(sessionId);
         if (!instance || !instance.socket) {
-            throw new Error("WhatsApp session is disconnected or not found");
+            throw new WhatsAppSessionUnavailableError();
         }
 
         const sendResult = await instance.socket.sendMessage(jid, {

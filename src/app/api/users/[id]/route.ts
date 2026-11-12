@@ -1,81 +1,57 @@
-import { NextResponse, NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
-import { getAuthenticatedUser, isAdmin } from "@/lib/api-auth";
 import bcrypt from "bcryptjs";
+import { z } from "zod";
+import { withPrivilegedAdministration } from "@/lib/tenancy/privileged";
 
-export async function PATCH(
-    request: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-) {
-    const user = await getAuthenticatedUser(request);
+const userPatch = z.object({
+    name: z.string().trim().min(2).max(120).optional(),
+    email: z.string().trim().email().max(254).optional(),
+    password: z.string().min(6).max(128).optional(),
+    role: z.enum(["SUPERADMIN", "STAFF", "USER"]).optional(),
+}).refine((value) => Object.keys(value).length > 0);
 
-    // Only SUPERADMIN can update users
-    if (!user || !isAdmin(user.role)) {
-        return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 403 });
-    }
+type UserParams = { params: Promise<{ id: string }> };
 
+export async function PATCH(request: Request, { params }: UserParams) {
     const { id } = await params;
-
-    try {
-        const body = await request.json();
-        const { name, email, password, role } = body;
-
-        // Prevent modifying own role to lock oneself out (optional safety)
-        if (id === user.id && role && role !== "SUPERADMIN") {
-            // Allow update but maybe warn? For now let it be.
+    return withPrivilegedAdministration(request, {
+        name: "USER_UPDATE", action: "WRITE", resourceType: "User", resourceId: id,
+    }, async (tx) => {
+        const parsed = userPatch.safeParse(await request.json().catch(() => null));
+        if (!parsed.success) {
+            return { status: 400, data: { status: false, message: "Validation error" } };
         }
 
-        const updateData: Prisma.UserUpdateInput = {};
-        if (name) updateData.name = name;
-        if (email) updateData.email = email;
-        if (role) updateData.role = role;
-        if (password) {
-            updateData.password = await bcrypt.hash(password, 10);
-        }
+        const target = await tx.user.findUnique({ where: { id }, select: { id: true, email: true } });
+        if (target?.id !== id) return { status: 404, data: { status: false, message: "User not found" } };
 
-        const updatedUser = await prisma.user.update({
+        const { name, email, password, role } = parsed.data;
+        const normalizedEmail = email?.toLowerCase();
+        const emailChanged = normalizedEmail !== undefined && normalizedEmail !== target.email;
+        const user = await tx.user.update({
             where: { id },
-            data: updateData,
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-                updatedAt: true
-            }
+            data: {
+                name, email: normalizedEmail, role,
+                password: password ? await bcrypt.hash(password, 10) : undefined,
+                ...(emailChanged ? { emailVerified: false, emailVerifiedAt: null } : {}),
+            },
+            select: { id: true, name: true, email: true, role: true, updatedAt: true },
         });
-
-        return NextResponse.json({ status: true, message: "User updated successfully", data: updatedUser });
-
-    } catch (error) {
-        console.error("Update user error:", error);
-        return NextResponse.json({ status: false, message: "Failed to update user", error: "Failed to update user" }, { status: 500 });
-    }
+        return { data: { status: true, message: "User updated successfully", data: user } };
+    });
 }
 
-export async function DELETE(
-    request: NextRequest,
-    { params }: { params: Promise<{ id: string }> }
-) {
-    const user = await getAuthenticatedUser(request);
-
-    // Only SUPERADMIN can delete users
-    if (!user || !isAdmin(user.role)) {
-        return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 403 });
-    }
-
+export async function DELETE(request: Request, { params }: UserParams) {
     const { id } = await params;
+    return withPrivilegedAdministration(request, {
+        name: "USER_DELETE", action: "DELETE", resourceType: "User", resourceId: id,
+    }, async (tx, actorUserId) => {
+        const target = await tx.user.findUnique({ where: { id }, select: { id: true } });
+        if (target?.id !== id) return { status: 404, data: { status: false, message: "User not found" } };
+        if (target.id === actorUserId) {
+            return { status: 400, data: { status: false, message: "Cannot delete yourself" } };
+        }
 
-    if (id === user.id) {
-        return NextResponse.json({ status: false, message: "Cannot delete yourself", error: "Cannot delete yourself" }, { status: 400 });
-    }
-
-    try {
-        await prisma.user.delete({ where: { id } });
-        return NextResponse.json({ status: true, message: "User deleted successfully" });
-    } catch (error) {
-        console.error("Delete user error:", error);
-        return NextResponse.json({ status: false, message: "Failed to delete user", error: "Failed to delete user" }, { status: 500 });
-    }
+        await tx.user.delete({ where: { id } });
+        return { data: { status: true, message: "User deleted successfully" } };
+    });
 }

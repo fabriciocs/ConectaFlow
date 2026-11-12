@@ -68,6 +68,10 @@ export default function RegisterPage() {
                 }),
             });
 
+            if (response.status === 409) {
+                setError(t('register.emailAlreadyExists'));
+                return;
+            }
             if (response.status === 503) {
                 setSuccess(true);
                 setNotice(t('verify.resendFailed'));
@@ -110,7 +114,7 @@ export default function RegisterPage() {
             <div className="flex flex-col items-center justify-center min-h-screen bg-background relative overflow-hidden">
                 <div className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-[40rem] h-[40rem] bg-primary/20 rounded-full blur-[120px] pointer-events-none" />
                 <div className="glass-panel p-10 rounded-3xl flex flex-col items-center text-center max-w-sm animate-in zoom-in duration-500">
-                    <BrandMark className="mb-6" fallbackClassName="rounded-full bg-emerald-500 shadow-emerald-500/30" />
+                    <BrandMark homeLink className="mb-6" fallbackClassName="rounded-full bg-emerald-500 shadow-emerald-500/30" />
                     <h2 className="text-2xl font-bold text-foreground mb-2">{t('register.successTitle')}</h2>
                     <p className="text-muted-foreground">{t('register.successDescription')}</p>
                     <Button type="button" variant="outline" className="mt-5" disabled={resending} onClick={resendVerification}>
@@ -136,7 +140,7 @@ export default function RegisterPage() {
 
             <div className="relative z-10 w-full max-w-md p-4 animate-in fade-in zoom-in-95 duration-500">
                 <div className="flex flex-col items-center mb-8">
-                    <BrandMark className="mb-4" />
+                    <BrandMark homeLink className="mb-4" />
                     <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('register.title')}</h1>
                     <p className="text-muted-foreground mt-2">{t('register.subtitle', { appName: brand.name })}</p>
                 </div>
@@ -145,6 +149,11 @@ export default function RegisterPage() {
                     {error && (
                         <div role="alert" aria-live="assertive" className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-center text-sm font-medium text-destructive animate-in shake duration-300 motion-reduce:animate-none">
                             {error}
+                            {error === t('register.emailAlreadyExists') && (
+                                <Link href="/auth/forgot-password" className="mt-2 block underline">
+                                    {t('login.forgotPassword')}
+                                </Link>
+                            )}
                         </div>
                     )}
 

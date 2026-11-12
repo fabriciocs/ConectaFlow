@@ -1,28 +1,26 @@
 "use client";
 
 import { useBranding } from "@/components/branding-provider";
+import Link from "@/components/app-link";
 import { cn } from "@/lib/utils";
 
 type BrandMarkProps = {
   className?: string;
   imageClassName?: string;
   fallbackClassName?: string;
+  homeLink?: boolean;
 };
 
-export function BrandMark({ className, imageClassName, fallbackClassName }: BrandMarkProps) {
+export function BrandMark({ className, imageClassName, fallbackClassName, homeLink = false }: BrandMarkProps) {
   const brand = useBranding();
 
-  if (brand.logoUrl) {
-    return (
+  const mark = brand.logoUrl ? (
       <img
         src={brand.logoUrl}
         alt={`${brand.name} logo`}
         className={cn("h-16 w-16 rounded-2xl object-cover", className, imageClassName)}
       />
-    );
-  }
-
-  return (
+  ) : (
     <span
       aria-hidden="true"
       className={cn(
@@ -33,5 +31,17 @@ export function BrandMark({ className, imageClassName, fallbackClassName }: Bran
     >
       {brand.logoFallback}
     </span>
+  );
+
+  if (!homeLink) return mark;
+
+  return (
+    <Link
+      href="/"
+      aria-label={`Ir para a página inicial de ${brand.name}`}
+      className="inline-flex shrink-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+    >
+      {mark}
+    </Link>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 import { apiUrl } from "@/lib/api-url";
+import { clientBasePath, withBasePath } from "@/lib/base-path";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
@@ -213,7 +214,7 @@ export function ChatWindow({ sessionId, jid, name, onBack }: ChatWindowProps) {
                 ...message,
                 content: message.content ?? "",
                 pushName: message.pushName ?? undefined,
-                mediaUrl: message.mediaUrl ?? undefined,
+                mediaUrl: message.mediaUrl ? withBasePath(message.mediaUrl, clientBasePath()) : undefined,
             }));
             if (!before) { setMessages(fetchedMessages); setAutoScroll(true); }
             else if (fetchedMessages.length > 0) setMessages(prev => [...fetchedMessages, ...prev]);
@@ -245,7 +246,9 @@ export function ChatWindow({ sessionId, jid, name, onBack }: ChatWindowProps) {
         const normalizedJid = jid.endsWith("@c.us") ? jid.replace("@c.us", "@s.whatsapp.net") : jid;
         const handler = (newMessages: Message[]) => {
             setMessages(prev => {
-                const relevant = newMessages.filter(m => m.remoteJid === normalizedJid || prev.some(p => p.remoteJid === m.remoteJid));
+                const relevant = newMessages
+                    .filter(m => m.remoteJid === normalizedJid || prev.some(p => p.remoteJid === m.remoteJid))
+                    .map(m => ({ ...m, mediaUrl: m.mediaUrl ? withBasePath(m.mediaUrl, clientBasePath()) : undefined }));
                 if (relevant.length === 0) return prev;
                 const combined = [...prev, ...relevant];
                 const unique = Array.from(new Map(combined.map(m => [m.keyId, m])).values());

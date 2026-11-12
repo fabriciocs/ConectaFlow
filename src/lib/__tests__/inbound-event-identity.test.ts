@@ -52,6 +52,18 @@ test("separates changed payloads that reuse a message id", () => {
     assert.notEqual(first.eventId, second.eventId);
 });
 
+test("gives distinct group updates content-based event identities", () => {
+    const firstData = { id: "group@g.us", subject: "Before" };
+    const changedData = { id: "group@g.us", subject: "After" };
+    const first = buildInboundEventIdentity("session-1", "group.update", firstData);
+    const changed = buildInboundEventIdentity("session-1", "group.update", changedData);
+    const duplicate = buildInboundEventIdentity("session-1", "group.update", { subject: "Before", id: "group@g.us" });
+
+    assert.notEqual(first.originalMessageId, changed.originalMessageId);
+    assert.notEqual(first.eventId, changed.eventId);
+    assert.deepEqual(first, duplicate);
+});
+
 test("ignores transport timestamps and generated media URLs in the payload hash", () => {
     const first = buildInboundEventIdentity("session-1", "message.received", {
         key: { id: "wamid-1" },

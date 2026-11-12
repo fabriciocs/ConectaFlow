@@ -27,12 +27,53 @@ export function clientCredentials(request: Request, params: URLSearchParams) {
   return { clientId: params.get("client_id") ?? "", clientSecret: params.get("client_secret") ?? undefined };
 }
 
+export const MAX_OAUTH_FORM_BODY_BYTES = 16 * 1024;
+export const OAUTH_FORM_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Cap actual bytes before buffering or parsing; Content-Length is advisory only.
+ * A single excess chunk terminates the stream immediately, without reading EOF.
+ */
 export async function formParameters(request: Request) {
   const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "application/x-www-form-urlencoded") throw new OAuthError("Content-Type must be application/x-www-form-urlencoded", "invalid_request", 400);
-  const body = await request.text();
-  if (Buffer.byteLength(body, "utf8") > 16 * 1024) throw new OAuthError("OAuth request body is too large", "invalid_request", 413);
-  return new URLSearchParams(body);
+  const headerLength = request.headers.get("content-length");
+  if (headerLength !== null) {
+    if (!/^\d{1,20}$/.test(headerLength)) throw new OAuthError("Invalid Content-Length", "invalid_request", 400);
+    if (BigInt(headerLength) > BigInt(MAX_OAUTH_FORM_BODY_BYTES)) throw new OAuthError("OAuth request body is too large", "invalid_request", 413);
+  }
+  if (request.signal.aborted) throw new OAuthError("OAuth request aborted", "invalid_request", 400);
+  const reader = request.body?.getReader();
+  if (!reader) return new URLSearchParams();
+
+  let rejectInterrupted: ((reason: OAuthError) => void) | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterrupted = reject;
+  });
+  const abort = () => rejectInterrupted?.(new OAuthError("OAuth request aborted", "invalid_request", 400));
+  request.signal.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => rejectInterrupted?.(new OAuthError("OAuth request body timed out", "invalid_request", 408)), OAUTH_FORM_READ_TIMEOUT_MS);
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), interrupted]);
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw new OAuthError("Invalid OAuth request body chunk", "invalid_request", 400);
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_OAUTH_FORM_BODY_BYTES) throw new OAuthError("OAuth request body is too large", "invalid_request", 413);
+      chunks.push(Buffer.from(value));
+    }
+    return new URLSearchParams(Buffer.concat(chunks, totalBytes).toString("utf8"));
+  } catch (error) {
+    try { await reader.cancel(); } catch { /* aborted stream */ }
+    if (error instanceof OAuthError) throw error;
+    throw new OAuthError("Unable to read OAuth request body", "invalid_request", 400);
+  } finally {
+    clearTimeout(timer);
+    request.signal.removeEventListener("abort", abort);
+    try { reader.releaseLock(); } catch { /* pending read cancelled */ }
+  }
 }
 
 export function bearerFrom(request: Request) {

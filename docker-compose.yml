@@ -91,6 +91,7 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-wa_akg}
       MYSQL_APP_USER: ${MYSQL_APP_USER:-wa_akg_app}
       MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:?Defina MYSQL_APP_PASSWORD no arquivo .env}
+      WA_AKG_ALLOW_EMPTY_V2_BOOTSTRAP: ${WA_AKG_ALLOW_EMPTY_V2_BOOTSTRAP:-false}
     depends_on:
       db:
         condition: service_healthy

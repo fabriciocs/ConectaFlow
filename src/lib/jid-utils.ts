@@ -23,6 +23,42 @@ export function normalizeJid(jid: string | undefined | null): string {
 }
 
 /**
+ * Normalize a recipient at the outbound boundary. Brazilian mobile WhatsApp
+ * JIDs may use the legacy 8-digit subscriber form (without the ninth digit).
+ * We only rewrite numeric personal JIDs or bare phone numbers; LIDs, groups,
+ * newsletters, broadcasts, and unrelated domains remain opaque.
+ */
+export function normalizeOutboundJid(input: string): string {
+    const value = input.trim();
+    if (!value) return value;
+
+    const at = value.lastIndexOf("@");
+    const hasDomain = at >= 0;
+    const domain = hasDomain ? value.slice(at + 1).toLowerCase() : "";
+    if (hasDomain && domain !== "s.whatsapp.net" && domain !== "c.us") return value;
+
+    const rawUser = hasDomain ? value.slice(0, at) : value;
+    const deviceMatch = rawUser.match(/^(.*?)(:\d+)$/);
+    const deviceSuffix = deviceMatch?.[2] ?? "";
+    const phoneInput = deviceMatch?.[1] ?? rawUser;
+    if (!hasDomain && !/^\+?[\d\s().-]+$/.test(phoneInput)) return value;
+    if (hasDomain && !/^\d+$/.test(phoneInput)) return value;
+
+    const digits = phoneInput.replace(/\D/g, "");
+    let canonicalDigits = digits;
+    if (/^55[1-9]\d9\d{8}$/.test(digits)) {
+        canonicalDigits = `${digits.slice(0, 4)}${digits.slice(5)}`;
+    } else if (/^[1-9]\d9\d{8}$/.test(digits)) {
+        canonicalDigits = `55${digits.slice(0, 2)}${digits.slice(3)}`;
+    } else if (/^[1-9]\d\d{8}$/.test(digits)) {
+        canonicalDigits = `55${digits}`;
+    }
+
+    const normalizedDomain = domain === "c.us" ? "s.whatsapp.net" : domain;
+    return `${canonicalDigits}${deviceSuffix}@${normalizedDomain || "s.whatsapp.net"}`;
+}
+
+/**
  * Resolve a @lid JID to @s.whatsapp.net phone number JID.
  * 
  * Resolution strategy:

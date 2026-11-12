@@ -1,6 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUser, isSessionOwner } from "@/lib/api-auth";
+import { getAuthenticatedUser } from "@/lib/api-auth";
+import { getAuthorizedSession } from "@/lib/session-access";
+import { webhookScopedWhere } from "@/lib/webhook-access";
 import { testWebhook } from "@/lib/webhook";
 import { revealWebhookRequestHeaders } from "@/lib/webhook-headers";
 
@@ -15,35 +17,14 @@ export async function POST(
 
     const { sessionId, id } = await params;
 
-    const isOwner = await isSessionOwner(user.id, user.role, sessionId);
-    if (!isOwner) {
+    const session = await getAuthorizedSession(user, request, sessionId);
+    if (!session) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
-    // Resolve session by either CUID or WhatsApp sessionId
-    const session = await prisma.session.findFirst({
-        where: {
-            OR: [
-                { id: sessionId },
-                { sessionId: sessionId }
-            ]
-        },
-        select: { id: true }
-    });
-
-    if (!session) {
-        return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
-    }
-
-    // Verify webhook access
+        // Verify webhook access
     const webhook = await prisma.webhook.findFirst({
-        where: {
-            id,
-            OR: [
-                { sessionId: session.id },
-                { sessionId: null, userId: user.id }
-            ]
-        }
+        where: webhookScopedWhere(session, user.id, id)
     });
 
     if (!webhook) {
@@ -52,6 +33,7 @@ export async function POST(
 
     const result = await testWebhook(webhook.id, webhook.url, webhook.secret, {
         allowLocal: webhook.allowLocal,
+        tenantId: session.tenantId,
         requestHeaders: revealWebhookRequestHeaders(webhook.requestHeaders)
     });
 
