@@ -16,6 +16,7 @@
     "db:bootstrap:v2:test": "node --test scripts/__tests__/prisma-bootstrap-v2.test.mjs scripts/__tests__/container-start-v2.test.mjs",
     "make-admin": "node scripts/setup-admin.js",
     "test": "tsx --test src/i18n/__tests__/*.test.ts src/lib/__tests__/*.test.ts",
+    "test:release-v2": "node --test scripts/release-v2/upgrade.test.mjs scripts/release-v2/check-sensitive-tracked-files.test.mjs scripts/release-v2/start-guard.test.mjs scripts/security/check-tracked-secrets.test.mjs",
     "mcp:install": "npm --prefix mcp/wa-akg-mcp install",
     "mcp:start": "npm --prefix mcp/wa-akg-mcp start",
     "mcp:check": "npm --prefix mcp/wa-akg-mcp run check",
