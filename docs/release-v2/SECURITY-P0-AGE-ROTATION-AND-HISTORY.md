@@ -4,6 +4,8 @@
 
 ## 1. Evidência e limites
 
+**Verificação adicional de escopo (somente metadados):** o repositório relacionado `fabriciocs/system-backups` está configurado como **privado**. O recipient indicado no template histórico `backups/.env.example` **não coincide** com a chave pública indicada junto à identidade exposta. Isso não prova que a chave era inutilizada: o destinatário efetivo pode ter vindo de outro `.env` ou secret manager. O campo `GITHUB_TOKEN` do template continha valor com aparência de token, mas a validade/autenticidade não foi comprovada; não reproduzir esse conteúdo.
+
 Uma chave privada age em formato reconhecível foi confirmada em `backups/.age-backup-key` no commit histórico `427a8c8630024b85254c0536c7e19fba29213811`. Não reproduzir o valor, nem anexá-lo a issue, log, documentação ou mensagem. Há também um `backups/.env.example` com valor de aparência de token GitHub e `backups/backup-audit.log` com URLs/e-mails operacionais; **não** está comprovado que o token do exemplo era válido ou que o log continha senhas.
 
 **Alteração concorrente observada durante a auditoria:** `release/prod-v1` recebeu commit `dcc263e4b69ce4aadaa9e019393f459ae138be8d` removendo a pasta `backups/` inteira; `release/prod-v2` recebeu merge `9f955b26c6e7faa7510eff392753f73516a4b519` dessa contenção e depois um `.gitignore` que impede rastreamento futuro de backups/chaves. Esses commits foram observados no GitHub; esta documentação não afirma autoria nem validação de runtime.
