@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const shellScript = readFileSync(join(root, "start.sh"), "utf8");
+const shellScript = readFileSync(join(root, "start.sh"), "utf8").replace(/\r\n/g, "\n");
 
 test("legacy V1 start script must fail closed in a V2 checkout", () => {
   assert.ok(shellScript.startsWith("#!/bin/bash"));
