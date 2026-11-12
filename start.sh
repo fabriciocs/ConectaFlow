@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# WARNING: the legacy V1 installer performs prisma db push, npm install and PM2 reload.
+# A V2 candidate must never run these operations without approved migration gates.
+if [ -f "docs/release-v2/PROD-V1-TO-PROD-V2-UPGRADE-SPEC.md" ]; then
+    echo 'STATUS=BLOCKED_LEGACY_UPGRADE_SCRIPT' >&2
+    echo 'Reason: start.sh is V1-only; V2 requires approved backup, migration and rollback gates.' >&2
+    echo 'Read-only preflight: node scripts/release-v2/upgrade.mjs doctor' >&2
+    exit 20
+fi
+
 # ==============================================================================
 # 🚀 WA-AKG Auto Deployment & Startup Script
 # ==============================================================================
