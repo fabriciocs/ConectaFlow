@@ -1,9 +1,9 @@
 # ConectaFlow — especificação de upgrade seguro Prod V1 → Prod V2
 
-**Data:** 2026-11-11. **Estado:** PROPOSED / PREPARATION ONLY / NO-GO para produção.  
-**Branch de preparação:** `release/prod-v2`. **Origem preservada:** `release/prod-v1` em `427a8c8630024b85254c0536c7e19fba29213811`.  
+**Data:** 2026-11-11. **Estado:** INTEGRATION IMPLEMENTED / UPGRADE PROPOSED / NO-GO para produção.  
+**Branch candidata:** `release/prod-v2`. **Origem preservada:** `release/prod-v1` em `dcc263e4b69ce4aadaa9e019393f459ae138be8d` (contém o commit histórico `427a8c863`).  
 **Repositório canônico:** `fabriciocs/ConectaFlow` (antigo `fabriciocs/WA-AKG`).  
-**IMPORTANTE:** criar a branch ou escrever este documento NÃO constitui upgrade aprovado, merge funcional, tag, release publicada ou deploy.
+**IMPORTANTE:** os merges de código em `release/prod-v2` foram executados e a ancestralidade verificada, mas isso **NÃO constitui** upgrade aprovado, testes funcionais, tag, release publicada ou deploy.
 
 ## 1. Objetivo e contrato
 
@@ -30,14 +30,14 @@ O diagnóstico não exige consentimento para mudanças porque não muda o sistem
 
 | Fonte | Ref observado em 2026-11-11 | Conteúdo / ação |
 | --- | --- | --- |
-| Prod V1 | `release/prod-v1` / `427a8c863` | Baseline 1.6.4; **preservar integralmente o histórico** |
+| Prod V1 | `release/prod-v1` / `dcc263e4` | Base histórica 1.6.4, com commit posterior removendo arquivos sensíveis do HEAD; histórico preservado |
 | Main | `main` / `e793659` | Código 1.7.0; V1 diverge: 13 commits na main e 2 exclusivos V1 |
-| B2 | `release/b2-integration-20261109` / `8e93961` | Seis commits documentais sobre main; PR #2 em DRAFT/NO-GO |
-| Tenant | `feature/multi-tenant-isolation-20261103` / `7d804ba` | Ancestral da security; PR #1 em DRAFT |
+| B2 | `release/b2-integration-20261109` / `8e93961` | Seis commits documentais sobre main; incorporados pelo PR #5; PR #2 fechado como superseded |
+| Tenant | `feature/multi-tenant-isolation-20261103` / `7d804ba` | Ancestral da security, incorporado no PR #4; PR #1 fechado como superseded |
 | Security | `feature/security-remediation-20261106` / `5b9ddfe` | Descende da tenant; 1 commit adicional |
 | Auth | `codex/auth-whatsapp-identity-linking-20261108` / `3e949a0` | Descende da security; 6 commits adicionais |
 
-**Ordem proposta:** inventariar V1 exclusiva → integrar main preservando delta V1 → integrar auth (contém tenant + security por ancestralidade) → integrar B2 (6 commits documentais, sem repetir main) → incorporar hotfixes/worktrees locais identificados, separadamente → revisar diff e testes. Revalidar SHAs antes de cada integração. Não importar logs, dados, arquivos privados, segredos, artefatos transitórios ou deleções massivas sem triagem individual. Preferir merges verdadeiros, com dois pais, preservando histórico; proibir sobrescrita por cópia integral de uma árvore, rebase e force-push. A presença do commit no histórico não prova adequação funcional: registrar divergências por caminho e decisões de resolução.
+**Ordem executada de integração Git:** V1 preservada → main (PR #3 / `7fb04e6a`) → auth incluindo tenant/security (PR #4 / `8a7cf444`) → B2 (PR #5 / `44227be6`). **Ainda pendentes:** inventário de worktrees locais, correções funcionais, validações de banco e rollback, segurança P0 e revisão final da candidata. Revalidar SHAs antes de cada integração. Não importar logs, dados, arquivos privados, segredos, artefatos transitórios ou deleções massivas sem triagem individual. Preferir merges verdadeiros, com dois pais, preservando histórico; proibir sobrescrita por cópia integral de uma árvore, rebase e force-push. A presença do commit no histórico não prova adequação funcional: registrar divergências por caminho e decisões de resolução.
 
 **Atualização de contenção (2026-11-11):** os HEADs de `release/prod-v1` (`dcc263e4`) e `release/prod-v2` (`9f955b26`) passaram a excluir todo o diretório `backups/`; `.gitignore` e `.dockerignore` da V2 também impedem nova inclusão e existe `scripts/security/check-tracked-secrets.mjs` para auditoria heurística de arquivos rastreados. A exclusão ocorreu em commits concorrentes observados na auditoria. **Persistem a exposição histórica, a rotação não verificada e o risco de perda do antigo script de backup.** Consulte `docs/release-v2/SECURITY-P0-AGE-ROTATION-AND-HISTORY.md` antes de qualquer promoção.
 
@@ -136,4 +136,4 @@ O script raiz não deve assumir scripts PowerShell para executar Linux/macOS. M�
 
 DoD: histórico reconciliado e revisado, commit V2 congelado, projeto compilado, suíte negativa de autorização/isolamento aprovada, backup-restauração auditados, duas repetições de upgrade ensaiadas com recuperações, monitoramento e RTO/RPO registrados, chaves comprometidas tratadas, manifesto assinado e decisão expressa de go/no-go. Publicação, tag, alterações na `main` e produção são fases distintas.
 
-**Estado observado nesta elaboração:** branch criada a partir da V1; integração funcional, testes locais, backup/restauração de uma instância real, distribuição e executor mutante permanecem NÃO VERIFICADOS / BLOQUEADOS. O comando seguro disponível inicialmente executará somente diagnóstico estático e planejamento. Consulte `docs/release-v2/INTEGRATION-REGISTER.md` para a situação de cada fonte.
+**Estado após integração:** ancestralidade da V1, main, tenant, security, auth e B2 integrada e confirmada pelo GitHub. `start.sh` legado bloqueado na candidata para impedir `db push`/PM2 involuntários; guia de atualização substituído por runbook seguro. **NÃO VERIFICADOS / BLOQUEADOS:** TypeScript, lint, testes Node/HTTP/MCP, banco representativo, backups/restauração, rotação P0, readiness R15, artefatos assinados, executor mutante e implantação. Consulte `docs/release-v2/INTEGRATION-REGISTER.md` e `docs/release-v2/GATE-REPORT.md`.
