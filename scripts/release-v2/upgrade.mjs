@@ -9,6 +9,7 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { checkTrackedFiles } from "./check-sensitive-tracked-files.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ACTION = process.argv[2] ?? "help";
@@ -62,6 +63,7 @@ function gitState() {
 }
 function preflight() {
   const git = gitState();
+  const secretScan = checkTrackedFiles(ROOT);
   const nodeMajor = Number(process.versions.node.split(".")[0] ?? 0);
   const npm = execSafe("npm", ["--version"]);
   const mysql = execSafe("mysql", ["--version"]);
@@ -74,9 +76,10 @@ function preflight() {
   if (!safeExists("package-lock.json")) issues.push("LOCKFILE_MISSING");
   if (!safeExists("prisma/migrations")) issues.push("PRISMA_HISTORY_MISSING");
   if (backedKeyTracked) issues.push("POSSIBLE_SECRET_TRACKED_IN_GIT");
+  if (secretScan.status !== "PASS") issues.push("TRACKED_SECRET_GUARD_" + secretScan.status);
   if (!mysql.ok) issues.push("MYSQL_CLI_UNAVAILABLE");
   if (!npm.ok) issues.push("NPM_UNAVAILABLE");
-  return { git, npm, mysql, issues };
+  return { git, npm, mysql, secretScan, issues };
 }
 function doctor() {
   const x = preflight();
@@ -97,6 +100,9 @@ function doctor() {
   line("PRISMA_SCHEMA", fileMeta("prisma/schema.prisma"));
   line("ENV_FILE_PRESENT", safeExists(".env") ? "YES" : "NO");
   line("RISK_FLAGS", x.issues.join(",") || "NONE_STATICALLY_DETECTED");
+  line("TRACKED_SECRET_SCAN", x.secretScan.status);
+  line("TRACKED_SECRET_FINDINGS", x.secretScan.findings.length);
+  line("KEY_ROTATION", "NOT_VERIFIED");
   line("GATES", "NOT_VERIFIED");
   line("UPGRADE_IMPLEMENTED", "NO");
   return 0;
