@@ -55,3 +55,6 @@ server.log
 *.age-identity
 *.age-private-key
 **/backup-audit.log
+
+# Encrypted backup archives are not source artifacts
+*.age
