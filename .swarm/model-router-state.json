@@ -1,0 +1,121 @@
+{
+  "totalDecisions": 0,
+  "modelDistribution": {
+    "haiku": 0,
+    "sonnet": 0,
+    "opus": 0,
+    "inherit": 0
+  },
+  "avgComplexity": 0.5,
+  "avgConfidence": 0.8,
+  "circuitBreakerTrips": 7,
+  "lastUpdated": "2026-10-28T14:02:14.333Z",
+  "learningHistory": [
+    {
+      "task": "Return a concise evidence-backed audit in Portuguese. Include top 5 findings, paths, confidence labe",
+      "model": "sonnet",
+      "complexity": 0.3409571428571428,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T13:33:53.488Z"
+    },
+    {
+      "task": "Return a concise evidence-backed audit in Portuguese. Include top 7 findings, paths, confidence labe",
+      "model": "sonnet",
+      "complexity": 0.3409571428571428,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T13:33:53.584Z"
+    },
+    {
+      "task": "Return a concise evidence-backed audit in Portuguese. Include current token/component inventory, acc",
+      "model": "haiku",
+      "complexity": 0.467389075630252,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T13:33:53.654Z"
+    },
+    {
+      "task": "Execute sua tarefa no worktree indicado. Faça alterações reais somente no escopo web UX/rebrand. Ins",
+      "model": "sonnet",
+      "complexity": 0.4126428571428571,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T14:02:14.113Z"
+    },
+    {
+      "task": "Execute sua tarefa no worktree indicado. Faça alterações reais somente no escopo SUPERADMIN/admin. I",
+      "model": "sonnet",
+      "complexity": 0.41682350230414744,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T14:02:14.177Z"
+    },
+    {
+      "task": "Execute sua tarefa no worktree indicado. Faça alterações reais somente no escopo backend mobile/come",
+      "model": "sonnet",
+      "complexity": 0.2920884792626728,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T14:02:14.255Z"
+    },
+    {
+      "task": "Execute sua tarefa no worktree indicado. Faça alterações reais somente sob mobile/. Crie shell Flutt",
+      "model": "sonnet",
+      "complexity": 0.28745,
+      "outcome": "failure",
+      "timestamp": "2026-10-28T14:02:14.332Z"
+    }
+  ],
+  "version": 2,
+  "priors": {
+    "low": {
+      "haiku": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 5
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    },
+    "med": {
+      "haiku": {
+        "alpha": 1,
+        "beta": 2
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 3
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    },
+    "high": {
+      "haiku": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "sonnet": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "opus": {
+        "alpha": 1,
+        "beta": 1
+      },
+      "inherit": {
+        "alpha": 1,
+        "beta": 1
+      }
+    }
+  }
+}

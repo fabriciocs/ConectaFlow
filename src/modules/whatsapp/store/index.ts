@@ -1,12 +1,15 @@
 import { prisma } from "@/lib/prisma";
-import type { WASocket, WAMessage, Contact } from "@whiskeysockets/baileys";
+import type { WASocket, WAMessage } from "@whiskeysockets/baileys";
+import type { BotConfig, MessageType, Prisma } from "@prisma/client";
 import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { onMessageReceived, onMessageSent, dispatchWebhook, downloadAndSaveMedia } from "@/lib/webhook";
+import { buildInboundWebhookEnvelope, linkInboundEvent, recordInboundEvent } from "../inbound-event.service";
 import { handleBotCommand, setSessionStartTime } from "../bot/command-handler";
 import { resolveToPhoneJid, isLidJid, normalizeJid } from "@/lib/jid-utils";
 
 import { Server } from "socket.io";
 import { logger } from "@/lib/logger";
+import { getSessionPublicRoom } from "@/server/socket";
 
 export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server | null) => {
     // Set start time for uptime command
@@ -39,7 +42,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
         // Emit to socket room for real-time frontend updates
         if (type === 'notify' || type === 'append') {
-            io?.to(sessionId).emit('message.upsert', { messages, type });
+            io?.to(getSessionPublicRoom(sessionId)).emit('message.upsert', { messages, type });
         }
 
         // Ensure we have the database session ID
@@ -49,7 +52,8 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
             dbSessionId = session.id;
         }
 
-        const processedMessages = [];
+        type SavedMessage = Awaited<ReturnType<typeof prisma.message.create>>;
+        const processedMessages: SavedMessage[] = [];
 
         // Fetch Bot Config for auto-read & welcome message
         const config = await prisma.botConfig.findUnique({
@@ -59,7 +63,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
         for (const msg of messages) {
             try {
                 // Auto Read Logic
-                if (type === 'notify' && (config as any)?.autoRead && !msg.key.fromMe) {
+                if (type === 'notify' && config?.autoRead && !msg.key.fromMe) {
                     await sock.readMessages([msg.key]);
                 }
 
@@ -81,12 +85,12 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
         // Emit to socket room for real-time frontend updates
         if (processedMessages.length > 0) {
             // Serialize for frontend: convert Date to ISO string
-            const serialized = processedMessages.map((m: any) => ({
+            const serialized = processedMessages.map((m) => ({
                 ...m,
                 timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp
             }));
             logger.debug("Socket", `Emitting message.update for ${serialized.length} messages in session ${sessionId}`);
-            io?.to(sessionId).emit('message.update', serialized);
+            io?.to(getSessionPublicRoom(sessionId)).emit('message.update', serialized);
         }
     });
 
@@ -137,24 +141,20 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                     create: {
                         sessionId: dbSessionId,
                         jid: c.id,
-                        // @ts-ignore
                         lid: c.lid || undefined,
                         name: c.name || c.notify || c.verifiedName,
                         notify: c.notify,
-                        // @ts-ignore
                         verifiedName: c.verifiedName,
                         profilePic: c.imgUrl || undefined,
-                        data: c as any
+                        data: c as unknown as Prisma.InputJsonValue
                     },
                     update: {
-                        // @ts-ignore
                         lid: c.lid || undefined,
                         name: c.name || undefined,
                         notify: c.notify || undefined,
-                        // @ts-ignore
                         verifiedName: c.verifiedName || undefined,
                         profilePic: c.imgUrl || undefined,
-                        data: c as any
+                        data: c as unknown as Prisma.InputJsonValue
                     }
                 });
 
@@ -175,7 +175,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 const keyId = update.key?.id;
                 if (!keyId) continue;
 
-                const statusMap: Record<number, string> = {
+                const statusMap: Record<number, "PENDING" | "SENT" | "DELIVERED" | "READ"> = {
                     0: 'PENDING',
                     1: 'SENT',
                     2: 'DELIVERED',
@@ -187,7 +187,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
 
                 await prisma.message.updateMany({
                     where: { sessionId: dbSessionId, keyId },
-                    data: { status: status as any }
+                    data: { status }
                 });
 
                 // Dispatch webhook for message status update
@@ -211,7 +211,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
                 if (!update.id) continue;
                 
                 // Keep DB in sync
-                const updateData: any = {};
+                const updateData: Prisma.GroupUpdateManyMutationInput = {};
                 if (update.subject !== undefined) updateData.subject = update.subject;
                 if (update.desc !== undefined) updateData.description = update.desc;
                 if (update.restrict !== undefined) updateData.restrict = update.restrict;
@@ -257,7 +257,7 @@ export const bindSessionStore = (sock: WASocket, sessionId: string, io: Server |
             sock.groupMetadata(update.id).then(async (g) => {
                 await prisma.group.updateMany({
                     where: { sessionId: dbSessionId as string, jid: update.id as string },
-                    data: { participants: g.participants as any }
+                    data: { participants: g.participants as unknown as Prisma.InputJsonValue }
                 });
             }).catch(e => {
                  logger.debug("Store", "Failed to refresh group participants metadata", e);
@@ -274,7 +274,7 @@ async function processAndSaveMessage(
     sessionId: string,
     triggerWebhook: boolean,
     sock?: WASocket,
-    config?: any,
+    config?: BotConfig | null,
     io?: Server | null
 ) {
     const keyId = msg.key.id;
@@ -335,7 +335,9 @@ async function processAndSaveMessage(
                     where: { sessionId },
                     select: { config: true }
                 });
-                antiDeleteEnabled = !!(s?.config as any)?.antiDelete;
+                const sessionConfig = s?.config;
+                antiDeleteEnabled = typeof sessionConfig === "object" && sessionConfig !== null &&
+                    "antiDelete" in sessionConfig && sessionConfig.antiDelete === true;
             } catch {}
 
             if (antiDeleteEnabled) {
@@ -354,7 +356,7 @@ async function processAndSaveMessage(
                     where: { sessionId: dbSessionId, keyId: targetKeyId }
                 });
                 if (updated) {
-                    io?.to(sessionId).emit("message.update", [{
+                    io?.to(getSessionPublicRoom(sessionId)).emit("message.update", [{
                         ...updated,
                         timestamp: updated.timestamp instanceof Date ? updated.timestamp.toISOString() : updated.timestamp
                     }]);
@@ -412,6 +414,39 @@ async function processAndSaveMessage(
         return null;
     }
 
+    // Record the inbound receipt before any media download or message write.
+    // The database uniqueness constraint is the final barrier against races.
+    let inboundEventId: string | null = null;
+    if (triggerWebhook && !fromMe) {
+        const inboundSession = await prisma.session.findUnique({
+            where: { id: dbSessionId },
+            select: { userId: true },
+        });
+
+        if (!inboundSession) {
+            logger.warn("Store", `Cannot record inbound event: session ${dbSessionId} not found`);
+            return null;
+        }
+
+        const event = "message.received" as const;
+        const payload = buildInboundWebhookEnvelope(sessionId, inboundSession.userId, event, msg);
+        const receipt = await recordInboundEvent({
+            sessionDbId: dbSessionId,
+            sessionId,
+            event,
+            data: msg,
+            payload,
+        });
+
+        if (!receipt.created) {
+            if (receipt.conflict) {
+                logger.error("Store", `Inbound event conflict for ${payload.eventId}`);
+            }
+            return null;
+        }
+        inboundEventId = receipt.event?.eventId ?? null;
+    }
+
     // Debug fromMe issue (Keep this for a while)
     if (fromMe === undefined || fromMe === null) {
         logger.warn("Store", `[DEBUG] Message ${keyId} has fromMe=${fromMe}. Key:`, msg.key);
@@ -421,8 +456,64 @@ async function processAndSaveMessage(
     let text = "";
     let messageType = "TEXT";
 
+    // Check for interactive message (native flow / viewOnce wrapper)
+    const rawMsg = msg.message;
+    const interactiveMsg = messageContent?.interactiveMessage || 
+        rawMsg?.viewOnceMessage?.message?.interactiveMessage || 
+        rawMsg?.viewOnceMessageV2?.message?.interactiveMessage;
+
     // Extract content based on message type
-    if (messageContent?.conversation) {
+    if (interactiveMsg) {
+        messageType = "TEXT";
+        const title = interactiveMsg.header?.title ? `*${interactiveMsg.header.title}*\n` : "";
+        const body = interactiveMsg.body?.text || "";
+        const footer = interactiveMsg.footer?.text ? `\n_${interactiveMsg.footer.text}_` : "";
+
+        let buttonList = "";
+        const rawBtns = interactiveMsg.nativeFlowMessage?.buttons || [];
+        if (Array.isArray(rawBtns) && rawBtns.length > 0) {
+            const btnTitles = rawBtns.map((b) => {
+                try {
+                    const parsed = typeof b.buttonParamsJson === "string" ? JSON.parse(b.buttonParamsJson) : b.buttonParamsJson;
+                    return `[🔘 ${parsed?.display_text || parsed?.title || b.name}]`;
+                } catch {
+                    return `[🔘 ${b.name}]`;
+                }
+            });
+            buttonList = `\n\n${btnTitles.join("  ")}`;
+        }
+
+        text = `${title}${body}${footer}${buttonList}`.trim() || "[Interactive Message]";
+    } else if (messageContent?.interactiveResponseMessage) {
+        messageType = "TEXT";
+        const rm = messageContent.interactiveResponseMessage;
+        const nativeParams = rm.nativeFlowResponseMessage?.paramsJson;
+        let selectedId = "";
+        try {
+            if (nativeParams) {
+                const parsed = JSON.parse(nativeParams);
+                selectedId = parsed.id || parsed.item_id || "";
+            }
+        } catch {}
+        const bodyText = rm.body?.text || "";
+        const choice = bodyText || selectedId;
+        text = choice ? `🔘 [Interactive Response] ${choice}` : "🔘 [Interactive Response]";
+    } else if (messageContent?.buttonsResponseMessage) {
+        messageType = "TEXT";
+        const bm = messageContent.buttonsResponseMessage;
+        const choice = bm.selectedDisplayText || bm.selectedButtonId || "";
+        text = choice ? `🔘 [Button Response] ${choice}` : "🔘 [Button Response]";
+    } else if (messageContent?.listResponseMessage) {
+        messageType = "TEXT";
+        const lm = messageContent.listResponseMessage;
+        const choice = lm.title || lm.singleSelectReply?.selectedRowId || "";
+        text = choice ? `📋 [List Response] ${choice}` : "📋 [List Response]";
+    } else if (messageContent?.templateButtonReplyMessage) {
+        messageType = "TEXT";
+        const tm = messageContent.templateButtonReplyMessage;
+        const choice = tm.selectedDisplayText || tm.selectedId || "";
+        text = choice ? `🔘 [Button Reply] ${choice}` : "🔘 [Button Reply]";
+    } else if (messageContent?.conversation) {
         text = messageContent.conversation;
     } else if (messageContent?.extendedTextMessage?.text) {
         text = messageContent.extendedTextMessage.text;
@@ -479,12 +570,12 @@ async function processAndSaveMessage(
     // Extract contextInfo (quoted message ID)
     let quoteId: string | null = null;
     if (msg.message) {
-        const msgObj = msg.message as any;
+        const msgObj = msg.message as unknown as Record<string, unknown>;
         for (const key of Object.keys(msgObj)) {
             const inner = msgObj[key];
             if (inner && typeof inner === 'object' && inner !== null && 'contextInfo' in inner) {
-                const contextInfo = (inner as any).contextInfo;
-                if (contextInfo?.stanzaId) {
+                const contextInfo = inner.contextInfo;
+                if (contextInfo && typeof contextInfo === "object" && "stanzaId" in contextInfo && typeof contextInfo.stanzaId === "string") {
                     quoteId = contextInfo.stanzaId;
                     break;
                 }
@@ -501,7 +592,7 @@ async function processAndSaveMessage(
                 fromMe: fromMe || false,
                 keyId,
                 pushName,
-                type: messageType as any,
+                type: messageType as MessageType,
                 content: text,
                 mediaUrl: fileUrl, // Save Media URL
                 status: fromMe ? "SENT" : "PENDING",
@@ -509,12 +600,26 @@ async function processAndSaveMessage(
                 quoteId
             }
         });
+
+        if (inboundEventId) {
+            try {
+                const linked = await linkInboundEvent(inboundEventId, {
+                    messageId: newMessage.id,
+                    mediaRef: fileUrl,
+                });
+                if (!linked) {
+                    logger.warn("Store", `Inbound event ${inboundEventId} could not be linked to message ${newMessage.id}`);
+                }
+            } catch (error) {
+                logger.error("Store", `Failed to link inbound event ${inboundEventId}`, error);
+            }
+        }
         
         // Ensure contact exists (Upsert Contact)
         const finalRemoteJid = normalizeJid(normalizedRemoteJid);
         if (remoteJid && !remoteJid.includes('@g.us') && !remoteJid.includes('status@broadcast')) {
             const contactJid = finalRemoteJid; // Use fully normalized JID
-            const contactData: any = {
+            const contactData: Prisma.ContactUncheckedCreateInput = {
                 sessionId: dbSessionId,
                 jid: contactJid
             };
@@ -525,19 +630,17 @@ async function processAndSaveMessage(
                 if (pushName) contactData.name = pushName;
             }
 
-            const contact = await prisma.contact.upsert({
+            await prisma.contact.upsert({
                 where: { sessionId_jid: { sessionId: dbSessionId, jid: contactJid } },
                 create: {
                     sessionId: dbSessionId,
                     jid: contactJid,
                     notify: !fromMe ? pushName : undefined,
                     name: !fromMe ? pushName : undefined,
-                    // @ts-ignore
                     remoteJidAlt: remoteJidAlt || undefined
                 },
                 update: !fromMe ? {
                     notify: pushName,
-                    // @ts-ignore
                     remoteJidAlt: remoteJidAlt || undefined
                 } : {}
             });
@@ -561,14 +664,14 @@ async function processAndSaveMessage(
             if (fromMe) {
                 onMessageSent(sessionId, msg, fileUrl).catch(e => logger.error("Webhook", "Error in onMessageSent", e));
             } else {
-                onMessageReceived(sessionId, msg, fileUrl).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
+            onMessageReceived(sessionId, msg, fileUrl, inboundEventId).catch(e => logger.error("Webhook", "Error in onMessageReceived", e));
             }
         }
 
         return newMessage;
-    } catch (e: any) {
-        logger.error("Store", "Error saving message query", e);
-        throw e;
+    } catch (error: unknown) {
+        logger.error("Store", "Error saving message query", error);
+        throw error;
     }
 }
 // Placeholder - verified that I need to find the logic first

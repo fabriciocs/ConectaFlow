@@ -1,17 +1,20 @@
 "use client";
+import { apiUrl } from "@/lib/api-url";
 
 import { useState, useEffect } from "react";
 import { MobileNav } from "@/components/dashboard/mobile-nav";
 import { SessionSelector } from "@/components/dashboard/session-selector";
 import { Button } from "@/components/ui/button";
 import { RealtimeClock } from "@/components/dashboard/realtime-clock";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Bell, Inbox, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { formatDistanceToNow } from "date-fns";
+import { useAppRouter as useRouter } from "@/components/app-base-path";
+import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
-import { io, Socket } from "socket.io-client";
+import { io } from "socket.io-client";
+import { useBranding } from "@/components/branding-provider";
 
 interface NavbarProps {
     appName?: string;
@@ -30,33 +33,39 @@ interface Notification {
 export function Navbar({ appName }: NavbarProps) {
     const router = useRouter();
     const { data: session } = useSession();
+    const t = useTranslations("notifications");
+    const format = useFormatter();
+    const now = useNow({ updateInterval: 60_000 });
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [unreadCount, setUnreadCount] = useState(0);
     const [isOpen, setIsOpen] = useState(false);
-    const [socket, setSocket] = useState<Socket | null>(null);
+    const brand = useBranding();
+    const resolvedAppName = brand.name || appName || "ConectaFlow";
 
     const fetchNotifications = async () => {
         try {
-            const res = await fetch("/api/notifications");
+            const res = await fetch(apiUrl("/api/notifications"));
             if (res.ok) {
                 const responseData = await res.json();
                 const items = responseData?.data || [];
                 setNotifications(items);
                 setUnreadCount(items.filter((n: Notification) => !n.read).length);
             }
-        } catch (e) {
+        } catch {
             console.error("Failed to fetch notifications");
         }
     };
 
     useEffect(() => {
         // Initial fetch
-        fetchNotifications();
+        const notificationFetchTimer = window.setTimeout(() => {
+            void fetchNotifications();
+        }, 0);
 
         // Setup Socket.IO connection
         if (session?.user?.id) {
             const socketInstance = io({
-                path: "/api/socket/io",
+                path: apiUrl("/api/socket/io"),
             });
 
             socketInstance.on("connect", () => {
@@ -76,24 +85,24 @@ export function Navbar({ appName }: NavbarProps) {
                 toast.info(notification.title, {
                     description: notification.message,
                     action: notification.href ? {
-                        label: "View",
+                        label: t("view"),
                         onClick: () => router.push(notification.href!)
                     } : undefined,
                 });
             });
 
-            setSocket(socketInstance);
-
             return () => {
+                window.clearTimeout(notificationFetchTimer);
                 socketInstance.disconnect();
             };
         }
-    }, [session?.user?.id]);
+        return () => window.clearTimeout(notificationFetchTimer);
+    }, [session?.user?.id, router, t]);
 
     const markAsRead = async (id?: string) => {
         try {
             const ids = id ? [id] : []; // Empty array means mark all
-            const res = await fetch("/api/notifications/read", {
+            const res = await fetch(apiUrl("/api/notifications/read"), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ ids })
@@ -107,14 +116,14 @@ export function Navbar({ appName }: NavbarProps) {
                     setUnreadCount(0);
                 }
             }
-        } catch (e) {
+        } catch {
             console.error("Failed to mark read");
         }
     };
 
     const deleteNotification = async (id: string) => {
         try {
-            const res = await fetch(`/api/notifications/delete?id=${id}`, {
+            const res = await fetch(apiUrl(`/api/notifications/delete?id=${id}`), {
                 method: "DELETE"
             });
             if (res.ok) {
@@ -123,11 +132,11 @@ export function Navbar({ appName }: NavbarProps) {
                     const notification = notifications.find(n => n.id === id);
                     return notification && !notification.read ? Math.max(0, prev - 1) : prev;
                 });
-                toast.success("Notification deleted");
+                toast.success(t("deleted"));
             }
-        } catch (e) {
+        } catch {
             console.error("Failed to delete notification");
-            toast.error("Failed to delete notification");
+            toast.error(t("deleteFailed"));
         }
     };
 
@@ -140,17 +149,18 @@ export function Navbar({ appName }: NavbarProps) {
     return (
         <header className="bg-background/40 backdrop-blur-2xl border-b border-border/50 h-16 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30 w-full shadow-sm">
             <div className="flex items-center gap-3">
-                <MobileNav appName={appName} />
+                <MobileNav appName={resolvedAppName} />
             </div>
 
             <div className="flex items-center gap-2 sm:gap-4 min-w-0">
                 <span className="hidden sm:inline"><RealtimeClock /></span>
                 <SessionSelector />
+                <LanguageSwitcher className="hidden sm:flex" />
                 <div className="h-6 w-px bg-border/50 hidden sm:block" />
 
                 <Popover open={isOpen} onOpenChange={setIsOpen}>
                     <PopoverTrigger asChild>
-                        <Button variant="ghost" size="icon" className="relative hover:bg-muted/50 rounded-full h-10 w-10">
+                        <Button variant="ghost" size="icon" className="relative hover:bg-muted/50 rounded-full h-10 w-10" aria-label={t("title")} title={t("title")}>
                             <Bell className={`h-5 w-5 transition-colors ${unreadCount > 0 ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`} />
                             {unreadCount > 0 && (
                                 <span className="absolute top-1.5 right-2.5 h-2.5 w-2.5 bg-red-500 rounded-full animate-pulse border-2 border-background" />
@@ -160,65 +170,76 @@ export function Navbar({ appName }: NavbarProps) {
                     <PopoverContent className="w-80 p-0 rounded-2xl border border-border/50 shadow-2xl glass-panel" align="end">
                         <div className="p-4 border-b border-border/50 flex justify-between items-center bg-background/50">
                             <div>
-                                <h4 className="font-semibold leading-none text-foreground">Notifications</h4>
+                                <h4 className="font-semibold leading-none text-foreground">{t("title")}</h4>
                                 <p className="text-xs text-muted-foreground mt-1">
-                                    {unreadCount > 0 ? `You have ${unreadCount} unread updates.` : "No new notifications."}
+                                    {t("unreadSummary", { count: unreadCount })}
                                 </p>
                             </div>
                             <div className="flex items-center gap-1">
                                 <Button variant="ghost" size="sm" className="h-auto py-1 px-2 text-xs" onClick={() => { router.push("/dashboard/inbox"); setIsOpen(false); }}>
-                                    See all
+                                    {t("seeAll")}
                                 </Button>
                                 {unreadCount > 0 && (
                                     <Button variant="ghost" size="sm" onClick={() => markAsRead()} className="h-auto py-1 px-2 text-xs">
-                                        Mark all read
+                                        {t("markAllRead")}
                                     </Button>
                                 )}
                             </div>
                         </div>
                         <div className="max-h-[300px] overflow-y-auto">
                             {notifications.length === 0 ? (
-                                <div className="min-h-[150px] flex flex-col items-center justify-center text-center p-4">
-                                    <div className="bg-slate-100 p-3 rounded-full mb-3">
-                                        <Inbox className="h-6 w-6 text-slate-400" />
+                                <div className="min-h-[150px] flex flex-col items-center justify-center text-center p-4" role="status">
+                                    <div className="bg-muted p-3 rounded-full mb-3">
+                                        <Inbox className="h-6 w-6 text-muted-foreground" />
                                     </div>
-                                    <p className="text-sm font-medium">No new notifications</p>
-                                    <p className="text-xs text-muted-foreground max-w-[180px]">We'll notify you when something important arrives.</p>
+                                    <p className="text-sm font-medium">{t("emptyTitle")}</p>
+                                    <p className="text-xs text-muted-foreground max-w-[180px]">{t("emptyDescription")}</p>
                                 </div>
                             ) : (
                                 <div className="divide-y">
                                     {notifications.map(n => (
                                         <div
                                             key={n.id}
-                                            className={`p-4 hover:bg-slate-50 transition-colors ${!n.read ? 'bg-blue-50/50' : ''}`}
+                                            className={`p-4 hover:bg-muted/50 transition-colors ${!n.read ? 'bg-primary/5' : ''}`}
                                         >
                                             <div className="flex justify-between items-start gap-3">
                                                 <div
-                                                    className="flex-1 space-y-1 cursor-pointer"
+                                                    className="flex-1 space-y-1 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    aria-label={`${n.title}: ${n.message}`}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") {
+                                                            event.preventDefault();
+                                                            handleNotificationClick(n);
+                                                        }
+                                                    }}
                                                     onClick={() => handleNotificationClick(n)}
                                                 >
-                                                    <p className={`text-sm font-medium leading-none ${!n.read ? 'text-blue-700' : 'text-slate-900'}`}>
+                                                    <p className={`text-sm font-medium leading-none ${!n.read ? 'text-primary' : 'text-foreground'}`}>
                                                         {n.title}
                                                     </p>
                                                     <p className="text-xs text-muted-foreground whitespace-normal break-words">
                                                         {n.message}
                                                     </p>
-                                                    <p className="text-[10px] text-slate-400">
-                                                        {formatDistanceToNow(new Date(n.createdAt), { addSuffix: true })}
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        {format.relativeTime(new Date(n.createdAt), now)}
                                                     </p>
                                                 </div>
                                                 <div className="flex items-center gap-2">
-                                                    {!n.read && <span className="h-2 w-2 bg-blue-500 rounded-full flex-shrink-0" />}
+                                                    {!n.read && <span className="h-2 w-2 bg-primary rounded-full flex-shrink-0" />}
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
-                                                        className="h-8 w-8"
+                                                        className="h-10 w-10"
+                                                        aria-label={t("deleteTitle")}
+                                                        title={t("deleteTitle")}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
                                                             deleteNotification(n.id);
                                                         }}
                                                     >
-                                                        <Trash2 className="h-4 w-4 text-red-500" />
+                                                        <Trash2 className="h-4 w-4 text-destructive" />
                                                     </Button>
                                                 </div>
                                             </div>

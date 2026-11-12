@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
-import { getAuthenticatedUser, canAccessSession, isAdmin } from "@/lib/api-auth";
+import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
+import { sanitizeOAuthReadSession } from "@/lib/session-access";
 
 // GET: Retrieve session settings
 export async function GET(
@@ -30,7 +31,11 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
         }
 
-        return NextResponse.json({ status: true, message: "Session settings fetched successfully", data: session });
+        return NextResponse.json({
+            status: true,
+            message: "Session settings fetched successfully",
+            data: user.authMethod === "oauth" ? { config: null } : session
+        });
     } catch (e) {
         console.error("Get session settings error:", e);
         return NextResponse.json({ status: false, message: "Failed to get settings", error: "Failed to get settings" }, { status: 500 });
@@ -56,6 +61,11 @@ export async function PATCH(
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }
 
+        const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+        if (!isOwner) {
+            return NextResponse.json({ status: false, message: "Forbidden - Only the session owner can update settings", error: "Forbidden" }, { status: 403 });
+        }
+
         const body = await request.json();
         const { config } = body;
 
@@ -70,7 +80,11 @@ export async function PATCH(
             // In a real app we might update internal instance state
         }
 
-        return NextResponse.json({ status: true, message: "Session settings updated successfully", data: updated });
+        return NextResponse.json({
+            status: true,
+            message: "Session settings updated successfully",
+            data: user.authMethod === "oauth" ? sanitizeOAuthReadSession(updated) : updated,
+        }, { headers: { "Cache-Control": "no-store" } });
 
     } catch (e) {
         console.error("Update session settings error:", e);
@@ -92,8 +106,8 @@ export async function DELETE(
         }
 
         // Check if user can access this session
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
-        if (!canAccess) {
+        const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+        if (!isOwner) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot delete this session", error: "Forbidden - Cannot delete this session" }, { status: 403 });
         }
 

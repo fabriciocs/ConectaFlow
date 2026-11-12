@@ -1,0 +1,19 @@
+[mcp_servers.wa-akg]
+command = "node"
+args = ["mcp/wa-akg-mcp/src/server.mjs"]
+cwd = "C:\\repos\\WA-AKG"
+enabled = true
+required = false
+default_tools_approval_mode = "prompt"
+enabled_tools = [
+  "wa_akg_server_info",
+  "wa_akg_get_sessions",
+  "wa_akg_get_chat_sessionid",
+  "wa_akg_get_chat_sessionid_jid",
+]
+env_vars = ["WA_AKG_API_KEY"]
+
+[mcp_servers.wa-akg.env]
+WA_AKG_API_BASE_URL = "http://127.0.0.1:3030/api"
+WA_AKG_MCP_ALLOW_REMOTE_API = "false"
+WA_AKG_API_KEY="wag_R2-CGE4L-eVCcgVXFlwOUabYSlwYNPom"

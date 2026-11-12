@@ -1,9 +1,10 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { ChatService } from "@/modules/whatsapp/chat.service";
+import { ChatService, type ChatListFilter } from "@/modules/whatsapp/chat.service";
 import { getAuthenticatedUserForAction } from "@/lib/server-action-auth";
 import { canAccessSession } from "@/lib/api-auth";
+import type { InteractiveMessagePayload } from "@/modules/whatsapp/interactive";
 
 const CHAT_PAGE_SIZE = parseInt(process.env.NEXT_PUBLIC_CHAT_PAGE_SIZE || "50", 10);
 
@@ -12,7 +13,8 @@ export async function getChatsStatus(
     sessionId: string,
     limit = CHAT_PAGE_SIZE,
     before?: string,
-    search?: string
+    search?: string,
+    filter: ChatListFilter = "all"
 ) {
     const user = await getAuthenticatedUserForAction();
     if (!user) throw new Error("Unauthorized");
@@ -27,7 +29,7 @@ export async function getChatsStatus(
 
     if (!session) throw new Error("Session not found");
 
-    return await ChatService.getChatsList(session.id, limit, before, search);
+    return await ChatService.getChatsList(session.id, limit, before, search, filter);
 }
 
 // Fetch messages for a specific chat with cursor pagination
@@ -53,7 +55,7 @@ export async function getChatMessages(
     const { messages, hasMore } = await ChatService.getMessages(session.id, jid, limit, before);
 
     return {
-        messages: messages.map((msg: any) => ({
+        messages: messages.map((msg) => ({
             ...msg,
             timestamp: msg.timestamp instanceof Date
                 ? msg.timestamp.toISOString()
@@ -74,8 +76,8 @@ export async function sendChatMessage(sessionId: string, jid: string, text: stri
     try {
         await ChatService.sendTextMessage(sessionId, jid, { text }, undefined, quotedMessageId);
         return { success: true };
-    } catch (error: any) {
-        throw new Error(`Failed to send message: ${error.message}`);
+    } catch (error) {
+        throw new Error(`Failed to send message: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
@@ -111,8 +113,30 @@ export async function sendMediaMessage(formData: FormData) {
         );
 
         return { success: true };
-    } catch (error: any) {
+    } catch (error) {
         console.error("Media send error:", error);
-        throw new Error(`Failed to send media: ${error.message}`);
+        throw new Error(`Failed to send media: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+
+// Send Interactive Message (Native Flow buttons, single_select, CTA links, etc.)
+export async function sendInteractiveChatMessage(
+    sessionId: string,
+    jid: string,
+    payload: InteractiveMessagePayload
+) {
+    const user = await getAuthenticatedUserForAction();
+    if (!user) throw new Error("Unauthorized");
+
+    const canAccess = await canAccessSession(user.id, user.role, sessionId);
+    if (!canAccess) throw new Error("Forbidden");
+
+    try {
+        const result = await ChatService.sendInteractiveMessage(sessionId, jid, payload);
+        return { success: true, result };
+    } catch (error) {
+        console.error("Interactive send error:", error);
+        throw new Error(`Failed to send interactive message: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+

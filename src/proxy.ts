@@ -1,12 +1,16 @@
 import { auth } from "@/lib/auth";
+import { validateApiKey } from "@/lib/api-auth";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { requestBasePath, requestPublicOrigin, withBasePath } from "@/lib/base-path";
 
 export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
+    const basePath = requestBasePath(request.headers);
+    const publicOrigin = requestPublicOrigin(request.headers, request.url);
 
     // Public routes that don't require authentication
-    const publicRoutes = ["/auth/login", "/auth/register", "/api/auth", "/api/test", "/terms", "/privacy"];
+    const publicRoutes = ["/auth/login", "/auth/register", "/api/auth", "/terms", "/privacy"];
 
     // Check if it's a public route
     const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route));
@@ -14,7 +18,9 @@ export async function proxy(request: NextRequest) {
     // Allow Next.js internals and favicon only
     if (
         pathname.startsWith("/_next") ||
-        pathname === "/favicon.ico"
+        pathname === "/favicon.ico" ||
+        pathname === "/.well-known/oauth-protected-resource" ||
+        pathname === "/.well-known/oauth-authorization-server"
     ) {
         return NextResponse.next();
     }
@@ -25,17 +31,23 @@ export async function proxy(request: NextRequest) {
         return NextResponse.next();
     }
 
-    // API routes: Check for API key or session
+    // API routes: Check for valid API key or session
     if (pathname.startsWith("/api/")) {
-        // Skip auth endpoints
-        if (pathname.startsWith("/api/auth") || pathname.startsWith("/api/test")) {
+        // OAuth protocol endpoints enforce their own client, token, or user-session
+        // checks. They must reach their route handlers before an end-user session
+        // exists (for example, during authorization-code and token exchange).
+        if (pathname.startsWith("/api/auth") || pathname.startsWith("/api/oauth/")) {
             return NextResponse.next();
         }
 
         // Check for API key in header
         const apiKey = request.headers.get("x-api-key");
         if (apiKey) {
-            // API key auth will be validated in the route handler
+            // Defense-in-depth: validate API key immediately
+            const user = await validateApiKey(request);
+            if (!user) {
+                return NextResponse.json({ error: "Invalid API key" }, { status: 401 });
+            }
             return NextResponse.next();
         }
 
@@ -53,8 +65,8 @@ export async function proxy(request: NextRequest) {
         const session = await auth();
 
         if (!session?.user) {
-            const loginUrl = new URL("/auth/login", request.url);
-            loginUrl.searchParams.set("callbackUrl", pathname);
+            const loginUrl = new URL(withBasePath("/auth/login", basePath), publicOrigin);
+            loginUrl.searchParams.set("callbackUrl", withBasePath(pathname, basePath) + request.nextUrl.search);
             return NextResponse.redirect(loginUrl);
         }
 
@@ -65,7 +77,7 @@ export async function proxy(request: NextRequest) {
     if (pathname === "/") {
         const session = await auth();
         if (session?.user) {
-            return NextResponse.redirect(new URL("/dashboard", request.url));
+            return NextResponse.redirect(new URL(withBasePath("/dashboard", basePath), publicOrigin));
         }
         return NextResponse.next();
     }
@@ -74,7 +86,7 @@ export async function proxy(request: NextRequest) {
     if (isPublicRoute) {
         const session = await auth();
         if (session?.user && (pathname.startsWith("/auth/login") || pathname.startsWith("/auth/register"))) {
-            return NextResponse.redirect(new URL("/dashboard", request.url));
+            return NextResponse.redirect(new URL(withBasePath("/dashboard", basePath), publicOrigin));
         }
         return NextResponse.next();
     }
@@ -82,8 +94,8 @@ export async function proxy(request: NextRequest) {
     // Default: require auth for everything else
     const session = await auth();
     if (!session?.user) {
-        const loginUrl = new URL("/auth/login", request.url);
-        loginUrl.searchParams.set("callbackUrl", pathname);
+        const loginUrl = new URL(withBasePath("/auth/login", basePath), publicOrigin);
+        loginUrl.searchParams.set("callbackUrl", withBasePath(pathname, basePath) + request.nextUrl.search);
         return NextResponse.redirect(loginUrl);
     }
 

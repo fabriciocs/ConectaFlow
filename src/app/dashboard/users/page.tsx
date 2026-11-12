@@ -1,15 +1,16 @@
 "use client";
+import { apiUrl } from "@/lib/api-url";
 
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useState, useEffect, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Trash2, Plus, Edit, User, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Trash2, Plus, Edit, User, ShieldAlert, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { useSession } from "next-auth/react";
+import { useTranslations } from "next-intl";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -25,7 +26,7 @@ interface UserProfile {
     id: string;
     name: string | null;
     email: string;
-    role: "SUPERADMIN" | "OWNER" | "STAFF";
+    role: "SUPERADMIN" | "STAFF" | "USER";
     createdAt: string;
     _count?: {
         sessions: number;
@@ -33,7 +34,8 @@ interface UserProfile {
 }
 
 export default function UsersPage() {
-    const { data: session } = useSession();
+    const t = useTranslations("users");
+    const tCommon = useTranslations("common");
     const [users, setUsers] = useState<UserProfile[]>([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
@@ -44,28 +46,28 @@ export default function UsersPage() {
         name: "",
         email: "",
         password: "",
-        role: "OWNER"
+        role: "USER"
     });
 
-    useEffect(() => {
-        fetchUsers();
-    }, []);
-
-    const fetchUsers = async () => {
+    const fetchUsers = useCallback(async () => {
         try {
-            const res = await fetch("/api/users");
+            const res = await fetch(apiUrl("/api/users"));
             if (res.ok) {
                 const responseData = await res.json();
                 setUsers(responseData?.data || []);
             } else if (res.status === 403) {
-                toast.error("Unauthorized. Only Super Admin can view users.");
+                toast.error(t("unauthorizedSuperAdmin"));
             }
         } catch (error) {
             console.error("Failed to fetch users", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [t]);
+
+    useEffect(() => {
+        void fetchUsers();
+    }, [fetchUsers]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -81,16 +83,16 @@ export default function UsersPage() {
             });
 
             if (res.ok) {
-                toast.success(editingUser ? "User updated" : "User created");
+                toast.success(editingUser ? t("userUpdated") : t("userCreated"));
                 setShowForm(false);
                 setEditingUser(null);
-                setFormData({ name: "", email: "", password: "", role: "OWNER" });
+                setFormData({ name: "", email: "", password: "", role: "USER" });
                 fetchUsers();
             } else {
                 const error = await res.json();
                 toast.error(error.error || "Operation failed");
             }
-        } catch (error) {
+        } catch {
             toast.error("Operation failed");
         }
     };
@@ -105,15 +107,15 @@ export default function UsersPage() {
         if (!deleteId) return;
 
         try {
-            const res = await fetch(`/api/users/${deleteId}`, { method: "DELETE" });
+            const res = await fetch(apiUrl(`/api/users/${deleteId}`), { method: "DELETE" });
             if (res.ok) {
-                toast.success("User deleted");
+                toast.success(t("userDeleted"));
                 fetchUsers();
             } else {
                 const error = await res.json();
                 toast.error(error.error || "Failed to delete");
             }
-        } catch (error) {
+        } catch {
             toast.error("Failed to delete user");
         } finally {
             setDeleteId(null);
@@ -123,12 +125,12 @@ export default function UsersPage() {
     const getRoleIcon = (role: string) => {
         switch (role) {
             case "SUPERADMIN": return <ShieldAlert className="h-4 w-4 text-red-500" />;
-            case "OWNER": return <ShieldCheck className="h-4 w-4 text-blue-500" />;
-            default: return <User className="h-4 w-4 text-gray-500" />;
+            case "STAFF": return <ShieldCheck className="h-4 w-4 text-primary" />;
+            default: return <User className="h-4 w-4 text-muted-foreground" />;
         }
     };
 
-    if (loading) return <div className="p-8 text-center text-muted-foreground">Loading...</div>;
+    if (loading) return <div className="p-8 text-center text-muted-foreground">{tCommon("loading")}</div>;
 
     // TODO: Improve RBAC check here if strictly needed, but API protects it.
     // If empty list and not loading, likely unauthorized or empty.
@@ -138,16 +140,16 @@ export default function UsersPage() {
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div>
                     <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
-                        <UsersIcon className="h-5 w-5 sm:h-6 sm:w-6" /> User Management
+                        <UsersIcon className="h-5 w-5 sm:h-6 sm:w-6" /> {t("title")}
                     </h1>
-                    <p className="text-sm text-muted-foreground">Manage users and roles</p>
+                    <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
                 </div>
                 <Button size="sm" onClick={() => {
                     setEditingUser(null);
-                    setFormData({ name: "", email: "", password: "", role: "OWNER" });
+                    setFormData({ name: "", email: "", password: "", role: "USER" });
                     setShowForm(true);
                 }}>
-                    <Plus className="h-4 w-4 mr-1 sm:mr-2" /> Add User
+                    <Plus className="h-4 w-4 mr-1 sm:mr-2" /> {t("addUser")}
                 </Button>
             </div>
 
@@ -155,13 +157,13 @@ export default function UsersPage() {
             {showForm && (
                 <Card className="border-2 border-primary/20">
                     <CardHeader>
-                        <CardTitle>{editingUser ? "Edit User" : "New User"}</CardTitle>
+                        <CardTitle>{editingUser ? t("editUser") : t("newUser")}</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <form onSubmit={handleSubmit} className="space-y-4">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                                 <div className="space-y-2">
-                                    <Label>Name</Label>
+                                    <Label>{t("name")}</Label>
                                     <Input
                                         value={formData.name}
                                         onChange={e => setFormData({ ...formData, name: e.target.value })}
@@ -169,7 +171,7 @@ export default function UsersPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Email</Label>
+                                    <Label>{t("email")}</Label>
                                     <Input
                                         type="email"
                                         value={formData.email}
@@ -180,7 +182,7 @@ export default function UsersPage() {
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                                 <div className="space-y-2">
-                                    <Label>{editingUser ? "New Password (leave blank to keep)" : "Password"}</Label>
+                                    <Label>{editingUser ? t("newPasswordHint") : t("password")}</Label>
                                     <Input
                                         type="password"
                                         value={formData.password}
@@ -189,7 +191,7 @@ export default function UsersPage() {
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <Label>Role</Label>
+                                    <Label>{t("colRole")}</Label>
                                     <Select
                                         value={formData.role}
                                         onValueChange={(v: string) => setFormData({ ...formData, role: v })}
@@ -198,16 +200,16 @@ export default function UsersPage() {
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="SUPERADMIN">Super Admin</SelectItem>
-                                            <SelectItem value="OWNER">Owner</SelectItem>
-                                            <SelectItem value="STAFF">Staff</SelectItem>
+                                            <SelectItem value="SUPERADMIN">{t("roleSuperadmin")}</SelectItem>
+                                            <SelectItem value="STAFF">{t("roleStaff")}</SelectItem>
+                                            <SelectItem value="USER">{t("roleUser")}</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
                             </div>
                             <div className="flex justify-end gap-2">
-                                <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
-                                <Button type="submit">{editingUser ? "Update" : "Create"}</Button>
+                                <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>{tCommon("cancel")}</Button>
+                                <Button type="submit">{editingUser ? tCommon("save") : tCommon("create")}</Button>
                             </div>
                         </form>
                     </CardContent>
@@ -237,8 +239,8 @@ export default function UsersPage() {
                                 </div>
 
                                 <div className="flex justify-between items-center text-sm text-muted-foreground">
-                                    <span>{user._count?.sessions || 0} Sessions</span>
-                                    <span>Joined {new Date(user.createdAt).toLocaleDateString()}</span>
+                                    <span>{t("sessionsCountPlain", { count: user._count?.sessions || 0 })}</span>
+                                    <span>{t("joined", { date: new Date(user.createdAt).toLocaleDateString() })}</span>
                                 </div>
                             </div>
                             <div className="bg-slate-50 p-3 flex justify-end gap-2 border-t">
@@ -252,10 +254,10 @@ export default function UsersPage() {
                                     });
                                     setShowForm(true);
                                 }}>
-                                    <Edit className="h-4 w-4 mr-1" /> Edit
+                                    <Edit className="h-4 w-4 mr-1" /> {tCommon("edit")}
                                 </Button>
                                 <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => handleDelete(user.id)}>
-                                    <Trash2 className="h-4 w-4 mr-1" /> Delete
+                                    <Trash2 className="h-4 w-4 mr-1" /> {tCommon("delete")}
                                 </Button>
                             </div>
                         </CardContent>
@@ -266,14 +268,14 @@ export default function UsersPage() {
             <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                        <AlertDialogTitle>{t("deleteConfirmTitle")}</AlertDialogTitle>
                         <AlertDialogDescription>
-                            This action cannot be undone. This will permanently delete the user request and remove their data from our servers.
+                            {t("deleteConfirmDescription")}
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={confirmDelete} className="bg-red-600 hover:bg-red-700">Continue</AlertDialogAction>
+                        <AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmDelete} className="bg-red-600 hover:bg-red-700">{tCommon("delete")}</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -281,7 +283,7 @@ export default function UsersPage() {
     );
 }
 
-function UsersIcon(props: any) {
+function UsersIcon(props: React.SVGProps<SVGSVGElement>) {
     return (
         <svg
             {...props}

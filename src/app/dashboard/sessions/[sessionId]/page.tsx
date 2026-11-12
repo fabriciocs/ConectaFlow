@@ -1,15 +1,19 @@
 "use client";
+import { apiUrl } from "@/lib/api-url";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { useAppRouter as useRouter } from "@/components/app-base-path";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { toast } from "sonner";
-import { ArrowLeft, Play, Square, RotateCcw, LogOut, Power, Trash2, QrCode, Activity, HardDrive, Wifi, MemoryStick, Copy, Check } from "lucide-react";
-import Link from "next/link";
-import { io, Socket } from "socket.io-client";
+import { ArrowLeft, Play, Square, RotateCcw, LogOut, Trash2, Activity, Wifi, MemoryStick, Copy } from "lucide-react";
+import Link from "@/components/app-link";
+import { io } from "socket.io-client";
 import { QRCodeSVG } from "qrcode.react";
+import { useTranslations } from "next-intl";
+import { formatWhatsAppPhone, normalizeWhatsAppPhone } from "@/lib/whatsapp-phone";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -36,27 +40,41 @@ type SessionDetail = {
     hasInstance: boolean;
 };
 
+interface SessionMetrics {
+    ping: string;
+    store: {
+        contacts: number;
+        chats: number;
+        messages: number;
+    };
+}
+
 export default function SessionDetailPage() {
+    const t = useTranslations("sessions.detail");
+    const tCommon = useTranslations("common");
     const params = useParams();
+    const searchParams = useSearchParams();
     const router = useRouter();
     const sessionId = params.sessionId as string;
 
     const [session, setSession] = useState<SessionDetail | null>(null);
     const [loading, setLoading] = useState(true);
     const [qrCode, setQrCode] = useState<string | null>(null);
-    const [socket, setSocket] = useState<Socket | null>(null);
     const [uptime, setUptime] = useState(0);
-    const [systemMetrics, setSystemMetrics] = useState<any>(null);
+    const [systemMetrics, setSystemMetrics] = useState<SessionMetrics | null>(null);
     const [phoneNumber, setPhoneNumber] = useState("");
     const [pairingCode, setPairingCode] = useState<string | null>(null);
     const [isPairing, setIsPairing] = useState(false);
+    const [isStarting, setIsStarting] = useState(false);
+    const autoStartAttempted = useRef(false);
+    const onboardingStart = searchParams.get("onboarding") === "1";
 
-    const fetchSession = async () => {
+    const fetchSession = useCallback(async () => {
         try {
-            const res = await fetch(`/api/sessions/${sessionId}`);
+            const res = await fetch(apiUrl(`/api/sessions/${sessionId}`));
             if (!res.ok) {
                 if (res.status === 404) {
-                    toast.error("Session not found");
+                    toast.error(t("notFound"));
                     router.push("/dashboard/sessions");
                     return;
                 }
@@ -71,29 +89,29 @@ export default function SessionDetailPage() {
             setUptime(data.uptime || 0);
         } catch (error) {
             console.error(error);
-            toast.error("Failed to load session details");
+            toast.error(t("loadFailed"));
         } finally {
             setLoading(false);
         }
-    };
+    }, [sessionId, router, t]);
 
-    const fetchMetrics = async () => {
+    const fetchMetrics = useCallback(async () => {
         try {
-            const res = await fetch(`/api/system/monitor/${sessionId}`);
+            const res = await fetch(apiUrl(`/api/system/monitor/${sessionId}`));
             const result = await res.json();
             if (result.status) {
                 setSystemMetrics(result.data);
             }
-        } catch (e) {
+        } catch {
             // silent ignore
         }
-    };
+    }, [sessionId]);
 
     useEffect(() => {
         fetchSession();
 
         const socketInstance = io({
-            path: "/api/socket/io",
+            path: apiUrl("/api/socket/io"),
             addTrailingSlash: false,
         });
 
@@ -102,19 +120,17 @@ export default function SessionDetailPage() {
             socketInstance.emit("join-session", sessionId);
         });
 
-        socketInstance.on("connection.update", (data: { status: string, qr: string, pairingCode?: string }) => {
+        socketInstance.on("connection.update", (data: { status: string, qr?: string | null, pairingCode?: string | null }) => {
             console.log("Socket update:", data);
             setSession(prev => prev ? { ...prev, status: data.status } : null);
-            setQrCode(data.qr || null);
-            if (data.pairingCode) setPairingCode(data.pairingCode);
+            if ("qr" in data) setQrCode(data.qr || null);
+            if ("pairingCode" in data) setPairingCode(data.pairingCode || null);
 
             // Re-fetch full details on major status change (like connection) to get 'me' info
             if (data.status === 'CONNECTED') {
                 fetchSession();
             }
         });
-
-        setSocket(socketInstance);
 
         // Uptime counter
         const interval = setInterval(() => {
@@ -130,12 +146,12 @@ export default function SessionDetailPage() {
             clearInterval(interval);
             clearInterval(metricsInterval);
         };
-    }, [sessionId]);
+    }, [sessionId, fetchSession, fetchMetrics]);
 
-    const performAction = async (action: string, payload: any = {}) => {
-        const loadingToast = toast.loading(` performing ${action}...`);
+    const performAction = useCallback(async (action: "start" | "restart" | "stop" | "logout" | "pair", payload: Record<string, string> = {}) => {
+        const loadingToast = toast.loading(t("performing", { action }));
         try {
-            const res = await fetch(`/api/sessions/${sessionId}/${action}`, {
+            const res = await fetch(apiUrl(`/api/sessions/${sessionId}/${action}`), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
@@ -156,44 +172,57 @@ export default function SessionDetailPage() {
             }
             fetchSession();
 
-        } catch (error: any) {
-            toast.error(error.message);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Action failed");
         } finally {
+            if (action === "start" || action === "restart") setIsStarting(false);
             toast.dismiss(loadingToast);
         }
-    };
+    }, [fetchSession, sessionId, t]);
+
+    useEffect(() => {
+        if (!onboardingStart || autoStartAttempted.current || !session || session.status !== "STOPPED") return;
+        autoStartAttempted.current = true;
+        setIsStarting(true);
+        void performAction("start");
+    }, [onboardingStart, performAction, session]);
 
     const handlePairingRequest = async () => {
-        if (!phoneNumber) {
-            toast.error("Please enter a phone number");
+        const normalizedPhone = normalizeWhatsAppPhone(phoneNumber);
+        if (!normalizedPhone) {
+            toast.error(t("phoneInvalid"));
             return;
         }
         setIsPairing(true);
-        await performAction('pair', { phoneNumber });
+        await performAction('pair', { phoneNumber: normalizedPhone });
         setIsPairing(false);
+    };
+
+    const handlePhoneChange = (value: string) => {
+        setPhoneNumber(formatWhatsAppPhone(value));
     };
 
     const copyToClipboard = (text: string) => {
         navigator.clipboard.writeText(text);
-        toast.success("Copied to clipboard");
+        toast.success(t("copiedToClipboard"));
     };
 
     const deleteSession = async () => {
         try {
-            const res = await fetch(`/api/sessions/${sessionId}/settings`, { method: 'DELETE' });
+            const res = await fetch(apiUrl(`/api/sessions/${sessionId}/settings`), { method: 'DELETE' });
             if (res.ok) {
-                toast.success("Session deleted");
+                toast.success(t("sessionDeleted"));
                 router.push("/dashboard/sessions");
             } else {
-                toast.error("Failed to delete");
+                toast.error(t("deleteFailed"));
             }
-        } catch (e) {
-            toast.error("Error deleting session");
+        } catch {
+            toast.error(t("deleteError"));
         }
     };
 
     const formatUptime = (seconds: number) => {
-        if (!session?.status || session.status !== "CONNECTED") return "Offline";
+        if (!session?.status || session.status !== "CONNECTED") return t("offline");
         const d = Math.floor(seconds / (3600 * 24));
         const h = Math.floor((seconds % (3600 * 24)) / 3600);
         const m = Math.floor((seconds % 3600) / 60);
@@ -201,19 +230,19 @@ export default function SessionDetailPage() {
         return `${d}d ${h}h ${m}m ${s}s`;
     };
 
-    if (loading) return <div className="p-8">Loading...</div>;
-    if (!session) return <div className="p-8">Session not found</div>;
+    if (loading) return <div className="p-8 text-muted-foreground" role="status" aria-live="polite">{tCommon("loading")}</div>;
+    if (!session) return <div className="p-8 text-muted-foreground" role="alert">{t("notFound")}</div>;
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-6">
                 <Button variant="ghost" asChild className="self-start">
                     <Link href="/dashboard/sessions">
-                        <ArrowLeft className="mr-2 h-4 w-4" /> Back to Sessions
+                        <ArrowLeft className="mr-2 h-4 w-4" /> {t("back")}
                     </Link>
                 </Button>
                 <h1 className="text-xl sm:text-2xl font-bold truncate">
-                    {session.name} <span className="text-gray-400 font-normal text-xs sm:text-sm block sm:inline mt-1 sm:mt-0">({session.sessionId})</span>
+                    {session.name} <span className="text-muted-foreground font-normal text-xs sm:text-sm block sm:inline mt-1 sm:mt-0">({session.sessionId})</span>
                 </h1>
             </div>
 
@@ -222,24 +251,24 @@ export default function SessionDetailPage() {
                 <Card className="md:col-span-2">
                     <CardHeader>
                         <CardTitle className="flex items-center justify-between">
-                            Session Status
-                            <div className={`px-3 py-1 rounded-full text-xs font-bold ${session.status === 'CONNECTED' ? 'bg-green-100 text-green-700' :
-                                session.status === 'STOPPED' ? 'bg-red-100 text-red-700' :
-                                    'bg-yellow-100 text-yellow-700'
+                            {t("statusTitle")}
+                            <div className={`px-3 py-1 rounded-full text-xs font-bold ${session.status === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' :
+                                session.status === 'STOPPED' ? 'bg-destructive/10 text-destructive' :
+                                    'bg-amber-500/10 text-amber-700 dark:text-amber-300'
                                 }`}>
                                 {session.status}
                             </div>
                         </CardTitle>
-                        <CardDescription>Real-time connection status and uptime.</CardDescription>
+                        <CardDescription>{t("statusDesc")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid grid-cols-2 gap-4">
-                            <div className="p-4 bg-gray-50 rounded-lg">
-                                <span className="text-sm text-gray-500 block">Uptime</span>
+                            <div className="p-4 bg-muted/40 rounded-lg">
+                                <span className="text-sm text-muted-foreground block">{t("uptime")}</span>
                                 <span className="text-xl font-mono font-medium">{formatUptime(uptime)}</span>
                             </div>
-                            <div className="p-4 bg-gray-50 rounded-lg">
-                                <span className="text-sm text-gray-500 block">Connected As</span>
+                            <div className="p-4 bg-muted/40 rounded-lg">
+                                <span className="text-sm text-muted-foreground block">{t("connectedAs")}</span>
                                 <span className="text-lg font-medium truncate">{session.me?.name || session.me?.id || "-"}</span>
                             </div>
                         </div>
@@ -247,59 +276,71 @@ export default function SessionDetailPage() {
                         {/* System Resource Extension */}
                         {session.status === 'CONNECTED' && systemMetrics && (
                             <div className="mt-4 pt-4 border-t">
-                                <h4 className="text-sm font-semibold mb-3 flex items-center gap-2"><Activity className="h-4 w-4" /> System Health</h4>
+                                <h4 className="text-sm font-semibold mb-3 flex items-center gap-2"><Activity className="h-4 w-4" /> {t("systemHealth")}</h4>
                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                                    <div className="bg-slate-50 p-3 rounded border text-center relative overflow-hidden">
-                                        <Wifi className="h-4 w-4 text-slate-400 absolute top-2 right-2" />
-                                        <div className="text-xs text-slate-500">Ping state</div>
-                                        <div className="font-bold text-green-600 mt-1">{systemMetrics.ping}</div>
+                                    <div className="bg-muted/30 p-3 rounded border text-center relative overflow-hidden">
+                                        <Wifi className="h-4 w-4 text-muted-foreground absolute top-2 right-2" />
+                                        <div className="text-xs text-muted-foreground">{t("pingState")}</div>
+                                        <div className="font-bold text-emerald-600 dark:text-emerald-400 mt-1">{systemMetrics.ping}</div>
                                     </div>
-                                    <div className="bg-slate-50 p-3 rounded border text-center">
-                                        <div className="text-xs text-slate-500">Store Contacts</div>
-                                        <div className="font-bold text-slate-700 mt-1">{systemMetrics.store?.contacts || 0}</div>
+                                    <div className="bg-muted/30 p-3 rounded border text-center">
+                                        <div className="text-xs text-muted-foreground">{t("storeContacts")}</div>
+                                        <div className="font-bold text-foreground mt-1">{systemMetrics.store?.contacts || 0}</div>
                                     </div>
-                                    <div className="bg-slate-50 p-3 rounded border text-center">
-                                        <div className="text-xs text-slate-500">Store Chats</div>
-                                        <div className="font-bold text-slate-700 mt-1">{systemMetrics.store?.chats || 0}</div>
+                                    <div className="bg-muted/30 p-3 rounded border text-center">
+                                        <div className="text-xs text-muted-foreground">{t("storeChats")}</div>
+                                        <div className="font-bold text-foreground mt-1">{systemMetrics.store?.chats || 0}</div>
                                     </div>
-                                    <div className="bg-slate-50 p-3 rounded border text-center relative">
-                                        <MemoryStick className="h-4 w-4 text-slate-400 absolute top-2 right-2 opacity-50" />
-                                        <div className="text-xs text-slate-500">Store Msgs</div>
-                                        <div className="font-bold text-slate-700 mt-1">{systemMetrics.store?.messages || 0}</div>
+                                    <div className="bg-muted/30 p-3 rounded border text-center relative">
+                                        <MemoryStick className="h-4 w-4 text-muted-foreground absolute top-2 right-2 opacity-50" />
+                                        <div className="text-xs text-muted-foreground">{t("storeMsgs")}</div>
+                                        <div className="font-bold text-foreground mt-1">{systemMetrics.store?.messages || 0}</div>
                                     </div>
                                 </div>
                             </div>
                         )}
 
-                        {qrCode && (
-                            <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg bg-white relative group">
-                                <QRCodeSVG value={qrCode} size={256} />
-                                <p className="mt-4 text-sm text-gray-500 animate-pulse">Scan with WhatsApp to connect</p>
+                        {session.status !== 'CONNECTED' && (
+                            <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg bg-card relative group">
+                                {qrCode && <>
+                                    <div role="img" aria-label={t("scanInstructionShort")}>
+                                        <QRCodeSVG value={qrCode} size={256} />
+                                    </div>
+                                    <p className="mt-4 text-sm text-muted-foreground motion-safe:animate-pulse">{t("scanInstructionShort")}</p>
+                                </>}
 
                                 <div className="mt-6 pt-6 border-t w-full">
                                     <div className="flex flex-col items-center gap-3">
-                                        <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Or link with phone number</div>
+                                        <div className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">{t("pairingCode")}</div>
                                         <div className="flex flex-col w-full max-w-sm gap-2 mt-1">
                                             <div className="flex gap-2">
                                                 <Input
-                                                    placeholder="628123456789"
+                                                    type="tel"
+                                                    inputMode="tel"
+                                                    autoComplete="tel"
+                                                    placeholder={t("phonePlaceholder")}
                                                     value={phoneNumber}
-                                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhoneNumber(e.target.value)}
+                                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handlePhoneChange(e.target.value)}
+                                                    aria-invalid={Boolean(phoneNumber) && !normalizeWhatsAppPhone(phoneNumber)}
                                                     className="font-mono"
                                                 />
-                                                <Button onClick={handlePairingRequest} disabled={isPairing || !phoneNumber}>
-                                                    Link
+                                                <Button onClick={handlePairingRequest} disabled={isPairing || isStarting || !session.hasInstance || !normalizeWhatsAppPhone(phoneNumber)}>
+                                                    {t("linkButton")}
                                                 </Button>
                                             </div>
-                                            <p className="text-[10px] text-muted-foreground text-center">Use country code without + or spaces (e.g., 628123456789)</p>
+                                            <p className="text-[10px] text-muted-foreground text-center">{t("phoneInstruction")}</p>
+                                            {!session.hasInstance && isStarting && <p className="text-xs text-muted-foreground text-center" role="status">{t("startingSession")}</p>}
+                                            {phoneNumber && !normalizeWhatsAppPhone(phoneNumber) && <p className="text-xs text-destructive text-center" role="alert">{t("phoneInvalid")}</p>}
                                         </div>
                                         {pairingCode && (
-                                            <div className="mt-4 p-4 bg-slate-900 rounded-lg w-full max-w-[320px] text-center border-2 border-slate-700 shadow-xl relative group/code">
-                                                <div className="text-[10px] text-slate-400 uppercase tracking-[0.2em] mb-2 font-semibold">Your Pairing Code</div>
-                                                <div
-                                                    className="text-3xl font-mono font-bold text-white tracking-[0.3em] flex justify-center cursor-pointer hover:text-blue-400 transition-colors py-2"
+                                            <div className="mt-4 p-4 bg-foreground rounded-lg w-full max-w-[320px] text-center border-2 border-border shadow-xl relative group/code">
+                                                <div className="text-[10px] text-background/70 uppercase tracking-[0.2em] mb-2 font-semibold">{t("yourPairingCode")}</div>
+                                                <button
+                                                    type="button"
+                                                    aria-label={t("clickToCopy")}
+                                                    className="text-3xl font-mono font-bold text-background tracking-[0.3em] flex justify-center cursor-pointer hover:text-primary transition-colors py-2 w-full rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                                     onClick={() => copyToClipboard(pairingCode)}
-                                                    title="Click to copy"
+                                                    title={t("clickToCopy")}
                                                 >
                                                     {pairingCode.toUpperCase().replace('-', '').split('').map((char, i) => (
                                                         <span key={i} className="flex items-center">
@@ -307,16 +348,18 @@ export default function SessionDetailPage() {
                                                             {i === 3 && <span className="mx-2 text-slate-600 opacity-50">-</span>}
                                                         </span>
                                                     ))}
-                                                </div>
+                                                </button>
                                                 <Button
                                                     size="icon"
                                                     variant="ghost"
-                                                    className="absolute top-2 right-2 h-7 w-7 text-slate-500 hover:text-white"
+                                                    className="absolute top-2 right-2 h-10 w-10 text-background/70 hover:text-background"
+                                                    aria-label={t("clickToCopy")}
+                                                    title={t("clickToCopy")}
                                                     onClick={() => copyToClipboard(pairingCode)}
                                                 >
                                                     <Copy className="h-3.5 w-3.5" />
                                                 </Button>
-                                                <div className="text-[9px] text-slate-500 mt-2 italic">Enter this code on your phone</div>
+                                                <div className="text-[9px] text-background/70 mt-2 italic">{t("enterCodeOnPhone")}</div>
                                             </div>
                                         )}
                                     </div>
@@ -329,35 +372,35 @@ export default function SessionDetailPage() {
                 {/* Actions Panel */}
                 <Card>
                     <CardHeader>
-                        <CardTitle>Controls</CardTitle>
-                        <CardDescription>Manage the active session.</CardDescription>
+                        <CardTitle>{t("controls")}</CardTitle>
+                        <CardDescription>{t("controlsDesc")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         <Button
                             variant="outline"
-                            className="w-full justify-start text-green-600 hover:text-green-700 hover:bg-green-50"
+                            className="w-full justify-start text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
                             onClick={() => performAction('start')}
-                            disabled={session.status === 'CONNECTED' || session.status === 'SCAN_QR'}
+                            disabled={isStarting || session.status === 'CONNECTED' || session.status === 'SCAN_QR'}
                         >
-                            <Play className="mr-2 h-4 w-4" /> Start Session
+                            <Play className="mr-2 h-4 w-4" /> {t("startSession")}
                         </Button>
 
                         <Button
                             variant="outline"
-                            className="w-full justify-start text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                            className="w-full justify-start text-amber-600 hover:text-amber-700 hover:bg-amber-500/10"
                             onClick={() => performAction('restart')}
                             disabled={!session.hasInstance && session.status !== 'CONNECTED'}
                         >
-                            <RotateCcw className="mr-2 h-4 w-4" /> Restart Session
+                            <RotateCcw className="mr-2 h-4 w-4" /> {t("restartSession")}
                         </Button>
 
                         <Button
                             variant="outline"
-                            className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50"
+                            className="w-full justify-start text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => performAction('stop')}
                             disabled={session.status === 'STOPPED'}
                         >
-                            <Square className="mr-2 h-4 w-4" /> Stop Session
+                            <Square className="mr-2 h-4 w-4" /> {t("stopSession")}
                         </Button>
 
                         <div className="border-t my-4 pt-4 space-y-3">
@@ -367,7 +410,7 @@ export default function SessionDetailPage() {
                                 onClick={() => performAction('logout')}
                                 disabled={session.status !== 'CONNECTED'}
                             >
-                                <LogOut className="mr-2 h-4 w-4" /> Logout
+                                <LogOut className="mr-2 h-4 w-4" /> {t("logout")}
                             </Button>
 
                             <AlertDialog>
@@ -376,21 +419,20 @@ export default function SessionDetailPage() {
                                         variant="destructive"
                                         className="w-full justify-start"
                                     >
-                                        <Trash2 className="mr-2 h-4 w-4" /> Delete Session
+                                        <Trash2 className="mr-2 h-4 w-4" /> {t("deleteSession")}
                                     </Button>
                                 </AlertDialogTrigger>
                                 <AlertDialogContent>
                                     <AlertDialogHeader>
-                                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                                        <AlertDialogTitle>{t("deleteConfirmTitle")}</AlertDialogTitle>
                                         <AlertDialogDescription>
-                                            This action cannot be undone. This will permanently delete the session
-                                            and remove your connection data from the server.
+                                            {t("deleteConfirmDescription")}
                                         </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
-                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                        <AlertDialogAction onClick={deleteSession} className="bg-red-600 hover:bg-red-700">
-                                            Delete
+                                        <AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
+                                        <AlertDialogAction onClick={deleteSession} className="bg-destructive hover:bg-destructive/90">
+                                            {tCommon("delete")}
                                         </AlertDialogAction>
                                     </AlertDialogFooter>
                                 </AlertDialogContent>

@@ -16,7 +16,7 @@ These variables are critical for the application to function.
 | `PORT` | string | `3000` | The port on which the server will listen. Ensure this port is free on your server! |
 | `DATABASE_URL` | string | — | The database connection string (e.g. `mysql://user:pass@localhost:3306/db` or `postgresql://user:pass@localhost:5432/db?schema=public`). |
 | `AUTH_SECRET` | string | — | Secure cryptographic key used for JWT session encryption. **Server will exit on startup if this is empty in production!** (Generate with `openssl rand -base64 32`). |
-| `BASE_URL` | string | `http://localhost:3000` | The unified public URL where your application is hosted. Essential for correct authentication callbacks and URL generation. |
+| `BASE_URL` | string | `http://localhost:3000` | The public URL where your application is hosted. Set this to the public HTTPS origin when exposing the same process through a tunnel or reverse proxy. |
 | `NODE_ENV` | string | `development` | Environment mode (`development` \| `production` \| `test`). |
 | `HOSTNAME` | string | `localhost` | Server hostname binding IP or address. |
 
@@ -28,10 +28,24 @@ Settings that manage OAuth flow, reverse proxies, and public-facing URL compilat
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `NEXTAUTH_URL` | string | `${BASE_URL}` | The URL pointing to the NextAuth authentication handler. Should match `BASE_URL`. |
+| `NEXTAUTH_URL` | string | `${BASE_URL}` | The public application origin used by NextAuth. Keep it aligned with `BASE_URL`; the reverse proxy prefix is supplied at runtime through `X-Forwarded-Prefix`. |
+| `OAUTH_ISSUER_URL` | URL | `${BASE_URL origin}${X-Forwarded-Prefix}` or request origin + forwarded prefix | Optional canonical OAuth issuer URL; preserve an explicit path when supplied. `NEXTAUTH_URL` is only for NextAuth and is not used as the OAuth issuer. Use HTTPS in production. |
 | `AUTH_TRUST_HOST` | boolean | `true` | Set to `true` if your application is deployed behind a reverse proxy (e.g. Nginx, Cloudflare, Apache). |
 | `NEXT_PUBLIC_APP_URL` | string | `${BASE_URL}` | Public facing client URL. |
 | `NEXT_PUBLIC_API_URL` | string | `${BASE_URL}/api` | Public facing API endpoint URL. |
+
+### Email verification (SMTP)
+
+Public registration requires email confirmation. Configure an SMTP server to deliver verification links. Set `SMTP_SECURE=true` for implicit TLS (typically port 465); otherwise Nodemailer uses SMTP submission and STARTTLS when offered (typically port 587). Authentication is used only when both username and password are set. Resend is limited to 3 messages per account per hour and 10 per day.
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `SMTP_HOST` | hostname | — | SMTP server host. Required to send verification email. |
+| `SMTP_PORT` | number | `587` | SMTP server port. |
+| `SMTP_SECURE` | boolean | `false` | Use implicit TLS when `true`; otherwise Nodemailer may negotiate STARTTLS. |
+| `SMTP_USER` | string | — | Optional SMTP authentication username. Set together with `SMTP_PASSWORD`. |
+| `SMTP_PASSWORD` | string | — | Optional SMTP authentication password. Never expose this value to clients. |
+| `SMTP_FROM` | address | — | Required sender address, for example `WA-AKG <no-reply@example.com>`. |
 
 ---
 
@@ -56,8 +70,8 @@ Interactive OpenAPI / Swagger documentation page settings.
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `NEXT_PUBLIC_SWAGGER_ENABLED` | boolean | `true` | Toggle public access to the interactive API documentation at `/docs`. |
-| `NEXT_PUBLIC_SWAGGER_USERNAME` | string | `admin` | Basic auth username required to view the `/docs` page. |
-| `NEXT_PUBLIC_SWAGGER_PASSWORD` | string | `admin123` | Basic auth password. **Wajib diubah di server production!** |
+| `SWAGGER_USERNAME` | string | — | Server-only username for Swagger authentication. |
+| `SWAGGER_PASSWORD` | string | — | Server-only Swagger password. Never use a `NEXT_PUBLIC_*` name for credentials. |
 
 ---
 
@@ -94,6 +108,11 @@ Rate limiting parameters and upload size thresholds.
 | `MAX_UPLOAD_SIZE_MB` | number | `50` | Maximum allowed file upload size (in MB) for media attachments. |
 | `ENABLE_RATE_LIMITING` | boolean | `true` | Protect API endpoints from brute-force/abuse via rate limits. |
 | `RATE_LIMIT_PER_MINUTE` | number | `60` | Max requests allowed per minute per IP address. |
+| `WA_AKG_AUTH_STATE_KEY` | string | — | Dedicated encryption key for Baileys AuthState; required in production and separate from `AUTH_SECRET`. |
+| `WA_AKG_TRUSTED_PROXY_HEADERS` | `false` | `false` | Set to `true` only when a private/trusted reverse proxy replaces forwarded client headers; enables per-client forwarded-IP rate-limit buckets. |
+| `SOCKET_IO_DISTRIBUTED` | boolean | `false` | Require the Socket.IO Redis adapter for multi-replica deployments. Fails startup when enabled without Redis configuration. |
+| `SOCKET_IO_REDIS_URL` | string | — | Private `redis://` or `rediss://` endpoint used for cross-replica Socket.IO broadcasts. Never log this value. |
+| `SOCKET_IO_REDIS_KEY` | string | `wa-akg:socket.io` | Bounded channel prefix shared by all replicas of the same deployment. |
 
 ---
 
@@ -103,6 +122,7 @@ Rate limiting parameters and upload size thresholds.
 | :--- | :--- | :--- | :--- |
 | `TZ` | string | `Asia/Jakarta` | Timezone database string (e.g. `Asia/Jakarta`, `UTC`) for cron campaigns. |
 | `LOCALE` | string | `id-ID` | Preferred locale for formatting dates and numbers. |
+| `DEFAULT_LANGUAGE` | string | `en` | Default dashboard UI language (`en`, `id`, `pt-BR`) for users who haven't picked one with the language switcher. See [I18N.md](I18N.md). |
 | `MEDIA_STORAGE_PATH` | string | `uploads` | Directory folder (relative to project root) where downloaded media attachments are stored. |
 | `NEXT_PUBLIC_GA_ID` | string | — | Google Analytics tracking ID. |
 
@@ -114,10 +134,15 @@ Required ONLY if utilizing the `docker-compose.yml` stack deployment.
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `MYSQL_ROOT_PASSWORD` | **Yes** | — | Root access password for the MySQL container. |
+| `MYSQL_ROOT_PASSWORD` | **Yes** | — | Root access password for MySQL administration and its health check; the app does not use this account. |
 | `MYSQL_DATABASE` | No | `wa_akg` | Target schema database name. |
-| `ADMIN_EMAIL` | **Yes** | — | Email of the default SuperAdmin generated on first boot. |
-| `ADMIN_PASSWORD` | **Yes** | — | Password of the default SuperAdmin generated on first boot. |
+| `MYSQL_APP_USER` | No | `wa_akg_app` | Least-privilege application account created for `MYSQL_DATABASE`. |
+| `MYSQL_APP_PASSWORD` | **Yes** | — | Password for the application account; use a strong unique value. |
+| `ADMIN_EMAIL` | No | — | Used only by the explicit one-time admin setup command; it is not run on app startup. |
+| `ADMIN_PASSWORD` | No | — | Used only by the explicit one-time admin setup command; it is not run on app startup. |
+| `PORT` | No | `43000` | Published on `127.0.0.1` by default; put a reverse proxy in front for remote access. |
+
+The app container does not mutate the schema or create an administrator on startup. A new database applies the checked-in migration chain using `docker compose --profile ops run --rm migrate`. For an existing database, compare its schema first, then set `PRISMA_BASELINE_MIGRATION` to the exact matching migration ID and run `docker compose --profile ops run --rm baseline`. Baseline only migrations already reflected in that database; after baselining the original migration, run `migrate` to apply the additive OAuth/worker changes. Create or promote an administrator separately with `docker compose --profile ops run --rm admin-setup`; these credentials are not passed to the app container.
 
 ---
 

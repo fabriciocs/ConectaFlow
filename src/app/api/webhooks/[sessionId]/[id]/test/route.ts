@@ -1,7 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser, isSessionOwner } from "@/lib/api-auth";
 import { testWebhook } from "@/lib/webhook";
+import { revealWebhookRequestHeaders } from "@/lib/webhook-headers";
 
 export async function POST(
     request: NextRequest,
@@ -14,8 +15,8 @@ export async function POST(
 
     const { sessionId, id } = await params;
 
-    const hasAccess = await canAccessSession(user.id, user.role, sessionId);
-    if (!hasAccess) {
+    const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+    if (!isOwner) {
         return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
     }
 
@@ -49,7 +50,10 @@ export async function POST(
         return NextResponse.json({ status: false, message: "Webhook not found", error: "Webhook not found" }, { status: 404 });
     }
 
-    const result = await testWebhook(webhook.id, webhook.url, webhook.secret);
+    const result = await testWebhook(webhook.id, webhook.url, webhook.secret, {
+        allowLocal: webhook.allowLocal,
+        requestHeaders: revealWebhookRequestHeaders(webhook.requestHeaders)
+    });
 
     return NextResponse.json({
         status: true,

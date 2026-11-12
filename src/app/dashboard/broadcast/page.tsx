@@ -1,18 +1,20 @@
 "use client";
+import { apiUrl } from "@/lib/api-url";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RefreshCw, Send, CheckCircle2, XCircle, Radio, Clock, AlertTriangle, History, Eye, Calendar } from "lucide-react";
 import { toast } from "sonner";
 import { useSession } from "@/components/dashboard/session-provider";
 import { SessionGuard } from "@/components/dashboard/session-guard";
 import { useSocket } from "@/components/chat/socket-context";
+import { useTranslations } from "next-intl";
 
 interface BroadcastProgress {
     broadcastId: string;
@@ -51,6 +53,7 @@ interface BroadcastRecipient {
 }
 
 export default function BroadcastPage() {
+    const t = useTranslations("broadcast");
     const { sessionId } = useSession();
     const [contacts, setContacts] = useState("");
     const [message, setMessage] = useState("");
@@ -68,6 +71,23 @@ export default function BroadcastPage() {
 
     const { getSocket, joinSession } = useSocket();
 
+    // Fetch history
+    const fetchHistory = useCallback(async () => {
+        if (!sessionId) return;
+        setHistoryLoading(true);
+        try {
+            const res = await fetch(apiUrl(`/api/messages/${sessionId}/broadcast/history?limit=20`));
+            if (res.ok) {
+                const data = await res.json();
+                setHistory(data.data || []);
+            }
+        } catch (e) {
+            console.error("Failed to fetch broadcast history", e);
+        } finally {
+            setHistoryLoading(false);
+        }
+    }, [sessionId]);
+
     // Socket for progress updates
     useEffect(() => {
         const socket = getSocket();
@@ -81,36 +101,18 @@ export default function BroadcastPage() {
             setBroadcastProgress(data);
             if (data.status === "completed") {
                 setLoading(false);
-                // Refresh history after completion
                 fetchHistory();
                 if (data.failed === 0) {
-                    toast.success(`Broadcast complete! ${data.sent} sent.`);
+                    toast.success(t("completeSuccess", { sent: data.sent }));
                 } else {
-                    toast.warning(`Broadcast complete. ${data.sent} sent, ${data.failed} failed.`);
+                    toast.warning(t("completeWarning", { sent: data.sent, failed: data.failed }));
                 }
             }
         };
 
         socket.on("broadcast.progress", handler);
         return () => { socket.off("connect", onConnect); socket.off("broadcast.progress", handler); };
-    }, [sessionId, getSocket, joinSession]);
-
-    // Fetch history
-    const fetchHistory = useCallback(async () => {
-        if (!sessionId) return;
-        setHistoryLoading(true);
-        try {
-            const res = await fetch(`/api/messages/${sessionId}/broadcast/history?limit=20`);
-            if (res.ok) {
-                const data = await res.json();
-                setHistory(data.data || []);
-            }
-        } catch (e) {
-            console.error("Failed to fetch broadcast history", e);
-        } finally {
-            setHistoryLoading(false);
-        }
-    }, [sessionId]);
+    }, [sessionId, getSocket, joinSession, fetchHistory, t]);
 
     // Load history on mount & tab switch
     useEffect(() => {
@@ -125,7 +127,7 @@ export default function BroadcastPage() {
         setDetailOpen(true);
         setDetailLoading(true);
         try {
-            const res = await fetch(`/api/messages/${sessionId}/broadcast/history/${log.id}`);
+            const res = await fetch(apiUrl(`/api/messages/${sessionId}/broadcast/history/${log.id}`));
             if (res.ok) {
                 const data = await res.json();
                 setSelectedLog(data.data);
@@ -138,8 +140,8 @@ export default function BroadcastPage() {
     };
 
     const handleSend = async () => {
-        if (!sessionId) return toast.error("No active session found");
-        if (!message.trim()) return toast.error("Message cannot be empty");
+        if (!sessionId) return toast.error(t("noActiveSession"));
+        if (!message.trim()) return toast.error(t("messageRequired"));
         setLoading(true);
         setBroadcastProgress(null);
 
@@ -150,12 +152,12 @@ export default function BroadcastPage() {
             });
 
             if (recipients.length === 0) {
-                toast.error("No recipients specified");
+                toast.error(t("recipientsRequired"));
                 setLoading(false);
                 return;
             }
 
-            const res = await fetch(`/api/messages/${sessionId}/broadcast`, {
+            const res = await fetch(apiUrl(`/api/messages/${sessionId}/broadcast`), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -168,14 +170,14 @@ export default function BroadcastPage() {
             const data = await res.json();
 
             if (res.ok) {
-                toast.info(`Broadcast started for ${recipients.length} recipients...`);
+                toast.info(t("broadcastStarted", { count: recipients.length }));
             } else {
-                toast.error(data.message || "Failed to start broadcast");
+                toast.error(data.message || t("failedToStart"));
                 setLoading(false);
             }
         } catch (e) {
             console.error(e);
-            toast.error("Error sending broadcast");
+            toast.error(t("errorSending"));
             setLoading(false);
         }
     };
@@ -192,16 +194,16 @@ export default function BroadcastPage() {
     };
 
     const tabs = [
-        { id: "new" as const, label: "New Broadcast", icon: Send },
-        { id: "history" as const, label: "History", icon: History },
+        { id: "new" as const, label: t("tabNew"), icon: Send },
+        { id: "history" as const, label: t("tabHistory"), icon: History },
     ];
 
     return (
         <SessionGuard>
             <div className="space-y-6">
                 <div>
-                    <h2 className="text-xl sm:text-3xl font-bold tracking-tight">Broadcast / Blast</h2>
-                    <p className="text-muted-foreground text-sm mt-1">Send bulk messages to multiple recipients at once.</p>
+                    <h2 className="text-xl sm:text-3xl font-bold tracking-tight">{t("title")}</h2>
+                    <p className="text-muted-foreground text-sm mt-1">{t("subtitle")}</p>
                 </div>
 
                 {/* Tabs */}
@@ -228,12 +230,12 @@ export default function BroadcastPage() {
                             {/* Recipients Card */}
                             <Card>
                                 <CardHeader>
-                                    <CardTitle>Recipients</CardTitle>
-                                    <CardDescription>Enter phone numbers separated by comma or new line.</CardDescription>
+                                    <CardTitle>{t("recipientsTitle")}</CardTitle>
+                                    <CardDescription>{t("recipientsDescription")}</CardDescription>
                                 </CardHeader>
                                 <CardContent className="space-y-4">
                                     <div className="space-y-2">
-                                        <Label>Target Numbers (e.g., 628123456789)</Label>
+                                        <Label>{t("targetLabel")}</Label>
                                         <Textarea
                                             placeholder={"628123456789\n628987654321"}
                                             className="min-h-[200px] font-mono text-sm"
@@ -241,7 +243,7 @@ export default function BroadcastPage() {
                                             onChange={e => setContacts(e.target.value)}
                                             disabled={loading}
                                         />
-                                        <p className="text-xs text-muted-foreground">{recipientCount} numbers identified</p>
+                                        <p className="text-xs text-muted-foreground">{t("numbersIdentified", { count: recipientCount })}</p>
                                     </div>
                                 </CardContent>
                             </Card>
@@ -249,13 +251,13 @@ export default function BroadcastPage() {
                             {/* Message Card */}
                             <Card>
                                 <CardHeader>
-                                    <CardTitle>Message Content</CardTitle>
+                                    <CardTitle>{t("messageTitle")}</CardTitle>
                                 </CardHeader>
                                 <CardContent className="space-y-4">
                                     <div className="space-y-2">
-                                        <Label>Message</Label>
+                                        <Label>{t("messageLabel")}</Label>
                                         <Textarea
-                                            placeholder="Type your message here..."
+                                            placeholder={t("messagePlaceholder")}
                                             className="min-h-[150px]"
                                             value={message}
                                             onChange={e => setMessage(e.target.value)}
@@ -265,7 +267,7 @@ export default function BroadcastPage() {
 
                                     <div className="space-y-4 pt-4">
                                         <div className="space-y-2">
-                                            <Label>Delay: {(delay[0] / 1000).toFixed(1)}s</Label>
+                                            <Label>{t("delayLabel")}: {(delay[0] / 1000).toFixed(1)}s</Label>
                                             <Slider
                                                 defaultValue={[2000]}
                                                 min={1000}
@@ -275,7 +277,7 @@ export default function BroadcastPage() {
                                                 onValueChange={setDelay}
                                                 disabled={loading}
                                             />
-                                            <p className="text-xs text-muted-foreground">Delay antar pesan (+ random).</p>
+                                            <p className="text-xs text-muted-foreground">{t("delayAntarPesan")}</p>
                                         </div>
 
                                         <Button
@@ -284,7 +286,7 @@ export default function BroadcastPage() {
                                             disabled={loading || !sessionId || recipientCount === 0 || !message.trim()}
                                         >
                                             {loading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-                                            {loading ? "Broadcasting..." : "Start Broadcast"}
+                                            {loading ? t("broadcasting") : t("startButton")}
                                         </Button>
                                     </div>
                                 </CardContent>
@@ -296,16 +298,16 @@ export default function BroadcastPage() {
                             <Card className={`border-2 transition-colors ${
                                 broadcastProgress.status === "completed"
                                     ? (broadcastProgress.failed === 0 ? "border-green-500/30 bg-green-50/30 dark:bg-green-950/10" : "border-yellow-500/30 bg-yellow-50/30 dark:bg-yellow-950/10")
-                                    : "border-blue-500/30 bg-blue-50/30 dark:bg-blue-950/10"
+                                    : "border-primary/30 bg-primary/5"
                             }`}>
                                 <CardHeader className="pb-3">
                                     <CardTitle className="flex items-center gap-2 text-lg">
                                         {broadcastProgress.status === "running" ? (
-                                            <><Radio className="h-5 w-5 text-blue-500 animate-pulse" /><span>Broadcast In Progress</span></>
+                                            <><Radio className="h-5 w-5 text-primary motion-safe:animate-pulse" /><span>{t("broadcastInProgress")}</span></>
                                         ) : broadcastProgress.failed === 0 ? (
-                                            <><CheckCircle2 className="h-5 w-5 text-green-500" /><span>Broadcast Completed</span></>
+                                            <><CheckCircle2 className="h-5 w-5 text-green-500" /><span>{t("broadcastCompleted")}</span></>
                                         ) : (
-                                            <><AlertTriangle className="h-5 w-5 text-yellow-500" /><span>Broadcast Completed with Errors</span></>
+                                            <><AlertTriangle className="h-5 w-5 text-yellow-500" /><span>{t("broadcastCompletedWithErrors")}</span></>
                                         )}
                                     </CardTitle>
                                     <CardDescription>ID: {broadcastProgress.broadcastId}</CardDescription>
@@ -313,7 +315,7 @@ export default function BroadcastPage() {
                                 <CardContent className="space-y-4">
                                     <div className="space-y-2">
                                         <div className="flex justify-between text-sm">
-                                            <span className="text-muted-foreground">Progress</span>
+                                            <span className="text-muted-foreground">{t("progressTitle")}</span>
                                             <span className="font-mono font-medium">
                                                 {broadcastProgress.sent + broadcastProgress.failed} / {broadcastProgress.total} ({broadcastProgress.progress || 0}%)
                                             </span>
@@ -325,13 +327,13 @@ export default function BroadcastPage() {
                                         <div className="bg-background rounded-lg p-3 text-center border">
                                             <div className="text-2xl font-bold text-green-600">{broadcastProgress.sent}</div>
                                             <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 mt-1">
-                                                <CheckCircle2 className="h-3 w-3" /> Sent
+                                                <CheckCircle2 className="h-3 w-3" /> {t("sent")}
                                             </div>
                                         </div>
                                         <div className="bg-background rounded-lg p-3 text-center border">
                                             <div className="text-2xl font-bold text-red-500">{broadcastProgress.failed}</div>
                                             <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 mt-1">
-                                                <XCircle className="h-3 w-3" /> Failed
+                                                <XCircle className="h-3 w-3" /> {t("failed")}
                                             </div>
                                         </div>
                                         <div className="bg-background rounded-lg p-3 text-center border">
@@ -339,15 +341,15 @@ export default function BroadcastPage() {
                                                 {broadcastProgress.total - broadcastProgress.sent - broadcastProgress.failed}
                                             </div>
                                             <div className="text-xs text-muted-foreground flex items-center justify-center gap-1 mt-1">
-                                                <Clock className="h-3 w-3" /> Pending
+                                                <Clock className="h-3 w-3" /> {t("pending")}
                                             </div>
                                         </div>
                                     </div>
 
                                     {broadcastProgress.status === "running" && broadcastProgress.current && (
                                         <div className="flex items-center gap-2 text-sm px-3 py-2 bg-muted/50 rounded-lg">
-                                            <RefreshCw className="h-3.5 w-3.5 animate-spin text-blue-500" />
-                                            <span className="text-muted-foreground">Now sending:</span>
+                                            <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+                                            <span className="text-muted-foreground">{t("nowSending")}</span>
                                             <span className="font-mono font-medium">{formatJid(broadcastProgress.current)}</span>
                                         </div>
                                     )}
@@ -355,7 +357,7 @@ export default function BroadcastPage() {
                                     {broadcastProgress.status === "completed" && broadcastProgress.errors && broadcastProgress.errors.length > 0 && (
                                         <div className="space-y-2">
                                             <h4 className="text-sm font-semibold text-red-600 flex items-center gap-1.5">
-                                                <XCircle className="h-4 w-4" /> Failed ({broadcastProgress.errors.length})
+                                                <XCircle className="h-4 w-4" /> {t("failed")} ({broadcastProgress.errors.length})
                                             </h4>
                                             <div className="max-h-40 overflow-y-auto bg-red-50 dark:bg-red-950/30 rounded-lg p-2 space-y-1">
                                                 {broadcastProgress.errors.map((err, i) => (
@@ -378,9 +380,9 @@ export default function BroadcastPage() {
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2">
                                 <History className="h-5 w-5" />
-                                Broadcast History
+                                {t("historyTitle")}
                             </CardTitle>
-                            <CardDescription>History of sent broadcasts, stored permanently.</CardDescription>
+                            <CardDescription>{t("historyPermanent")}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             {historyLoading ? (
@@ -389,7 +391,7 @@ export default function BroadcastPage() {
                                 </div>
                             ) : history.length === 0 ? (
                                 <div className="text-center py-8 text-muted-foreground">
-                                    <p className="text-sm">Belum ada broadcast.</p>
+                                    <p className="text-sm">{t("noHistoryShort")}</p>
                                 </div>
                             ) : (
                                 <div className="space-y-2">
@@ -404,7 +406,7 @@ export default function BroadcastPage() {
                                                         ? <CheckCircle2 className="h-8 w-8 text-green-500" />
                                                         : <AlertTriangle className="h-8 w-8 text-yellow-500" />
                                                 ) : (
-                                                    <Radio className="h-8 w-8 text-blue-500 animate-pulse" />
+                                                    <Radio className="h-8 w-8 text-primary motion-safe:animate-pulse" />
                                                 )}
                                             </div>
 
@@ -426,7 +428,7 @@ export default function BroadcastPage() {
 
                                             {/* View button */}
                                             <Button variant="ghost" size="sm" className="shrink-0" onClick={() => openDetail(log)}>
-                                                <Eye className="h-4 w-4 mr-1" /> Detail
+                                                <Eye className="h-4 w-4 mr-1" /> {t("detailButton")}
                                             </Button>
                                         </div>
                                     ))}
@@ -443,9 +445,9 @@ export default function BroadcastPage() {
                             <DialogTitle className="flex items-center gap-2">
                                 {selectedLog?.status === "completed"
                                     ? <CheckCircle2 className="h-5 w-5 text-green-500" />
-                                    : <Radio className="h-5 w-5 text-blue-500 animate-pulse" />
+                                    : <Radio className="h-5 w-5 text-primary motion-safe:animate-pulse" />
                                 }
-                                Broadcast Detail
+                                {t("detailTitle")}
                             </DialogTitle>
                         </DialogHeader>
 
@@ -459,34 +461,34 @@ export default function BroadcastPage() {
                                 <div className="grid grid-cols-3 gap-3">
                                     <div className="bg-muted/30 rounded-lg p-3 text-center">
                                         <div className="text-xl font-bold text-green-600">{selectedLog.sent}</div>
-                                        <div className="text-xs text-muted-foreground">Sent</div>
+                                        <div className="text-xs text-muted-foreground">{t("sent")}</div>
                                     </div>
                                     <div className="bg-muted/30 rounded-lg p-3 text-center">
                                         <div className="text-xl font-bold text-red-500">{selectedLog.failed}</div>
-                                        <div className="text-xs text-muted-foreground">Failed</div>
+                                        <div className="text-xs text-muted-foreground">{t("failed")}</div>
                                     </div>
                                     <div className="bg-muted/30 rounded-lg p-3 text-center">
                                         <div className="text-xl font-bold">{selectedLog.total}</div>
-                                        <div className="text-xs text-muted-foreground">Total</div>
+                                        <div className="text-xs text-muted-foreground">{t("total")}</div>
                                     </div>
                                 </div>
 
                                 {/* Message */}
                                 <div className="bg-muted/30 rounded-lg p-3">
-                                    <p className="text-xs text-muted-foreground mb-1">Message:</p>
+                                    <p className="text-xs text-muted-foreground mb-1">{t("messageLabel")}:</p>
                                     <p className="text-sm whitespace-pre-wrap break-words">{selectedLog.message}</p>
                                 </div>
 
                                 {/* Time */}
                                 <div className="flex gap-4 text-xs text-muted-foreground">
-                                    <span>Started: {formatTime(selectedLog.startedAt)}</span>
-                                    {selectedLog.completedAt && <span>Completed: {formatTime(selectedLog.completedAt)}</span>}
+                                    <span>{t("started")} {formatTime(selectedLog.startedAt)}</span>
+                                    {selectedLog.completedAt && <span>{t("completed")} {formatTime(selectedLog.completedAt)}</span>}
                                 </div>
 
                                 {/* Recipients list */}
                                 {selectedLog.recipients && selectedLog.recipients.length > 0 && (
                                     <div className="flex-1 overflow-y-auto min-h-0">
-                                        <h4 className="text-sm font-semibold mb-2">Recipients ({selectedLog.recipients.length})</h4>
+                                        <h4 className="text-sm font-semibold mb-2">{t("recipients")} ({selectedLog.recipients.length})</h4>
                                         <div className="space-y-1">
                                             {selectedLog.recipients.map(r => (
                                                 <div key={r.id}

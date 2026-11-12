@@ -7,27 +7,74 @@ import { parse } from "url";
 import next from "next";
 import { Server } from "socket.io";
 import { setupSocket } from "./socket";
+import { configureSocketIoAdapter } from "./socket-adapter";
 import { waManager } from "../modules/whatsapp/manager";
+import { startOutboundMessageWorker, stopOutboundMessageWorker } from "../modules/messaging/outbound-message.service";
+import { prisma } from "../lib/prisma";
 import { logger } from "../lib/logger";
+import { withBasePath } from "../lib/oauth/discovery.mjs";
+import { assertAuthStateEncryptionConfigured } from "../lib/crypto";
 import pkg from "../../package.json";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
 const port = parseInt(process.env.PORT || "3030", 10);
+const basePath = "";
 
-if (!process.env.AUTH_SECRET) {
-  logger.error("Server", "AUTH_SECRET is not set. Generate one with: openssl rand -base64 32");
-  process.exit(1);
+const INSECURE_AUTH_SECRETS = [
+  "change-me",
+  "secret",
+  "your-super-secret-key-at-least-32-chars-change-this-in-production",
+  "your-secret-here",
+  "YOUR_AUTH_SECRET_HERE",
+  "changethis",
+  "default_secret"
+];
+
+if (!process.env.AUTH_SECRET || INSECURE_AUTH_SECRETS.includes(process.env.AUTH_SECRET)) {
+  if (!dev) {
+    logger.error("Server", "FATAL: AUTH_SECRET is unset or using an insecure placeholder! Please generate a strong secret with: openssl rand -base64 32");
+    process.exit(1);
+  } else {
+    logger.warn("Server", "WARNING: AUTH_SECRET is unset or using a default placeholder. Please update it before deploying to production!");
+  }
 }
 
-const app = next({ dev, hostname, port });
+// On NTFS filesystems (e.g. /media/... partitions), Turbopack dev chunk naming containing colons
+// causes OS Error 22 (EINVAL). Default custom server to webpack unless TURBOPACK=1 is explicitly enabled.
+const useTurbopack = process.env.TURBOPACK === "1" || process.env.TURBO === "true";
+const app = next({
+  dev,
+  hostname,
+  port,
+  ...(dev ? (useTurbopack ? { turbopack: true } : { webpack: true }) : {})
+});
 const handle = app.getRequestHandler();
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
+  assertAuthStateEncryptionConfigured();
+  // Startup verifies database connectivity only. Apply versioned schema
+  // migrations explicitly before starting application replicas.
+  await prisma.$connect();
+
+  // Optional MCP add-on: mounted on this HTTP server, disabled by default.
+  let handleMcpHttp: ((req: import("http").IncomingMessage, res: import("http").ServerResponse) => Promise<boolean>) | undefined;
+  let mcpEndpointPath = "/mcp";
+  if (process.env.WA_AKG_MCP_ENABLED === "true") {
+    const mcpHttp = await import("../../mcp/wa-akg-mcp/src/http.mjs");
+    handleMcpHttp = await mcpHttp.createMcpHttpHandler({ basePath });
+    mcpEndpointPath = withBasePath(basePath, mcpHttp.endpointPath);
+    logger.info("Server", `MCP HTTP endpoint enabled at ${mcpEndpointPath}`);
+  }
+
   const server = createServer(async (req, res) => {
     try {
       if (!req.url) return;
       const parsedUrl = parse(req.url, true);
+      if (handleMcpHttp && (parsedUrl.pathname === mcpEndpointPath || parsedUrl.pathname === `${mcpEndpointPath}/`)) {
+        await handleMcpHttp(req, res);
+        return;
+      }
       await handle(req, res, parsedUrl);
     } catch (err) {
       logger.error("Server", "Error handling", req.url, err);
@@ -36,22 +83,52 @@ app.prepare().then(() => {
     }
   });
 
+  const allowedOrigins = new Set(
+    [process.env.BASE_URL, process.env.NEXTAUTH_URL, `http://${hostname}:${port}`]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => {
+        try { return new URL(value).origin; } catch { return ""; }
+      })
+      .filter(Boolean),
+  );
   const io = new Server(server, {
     path: "/api/socket/io",
     addTrailingSlash: false,
     cors: {
-      origin: "*",
+      origin: (origin, callback) => {
+        if (
+          !origin ||
+          allowedOrigins.has(origin) ||
+          origin.startsWith("http://localhost:") ||
+          origin.startsWith("http://127.0.0.1:")
+        ) {
+          callback(null, true);
+        } else {
+          callback(new Error("CORS origin denied"));
+        }
+      },
+      credentials: true,
       methods: ["GET", "POST"]
     }
   });
 
+  const socketAdapter = await configureSocketIoAdapter(io);
   setupSocket(io);
   // Optional: Global instance for Baileys to emit events
-  (global as any).io = io;
+  global.io = io;
 
   // Initialize WhatsApp Manager
   waManager.setup(io);
-  waManager.loadSessions();
+  void waManager.loadSessions().then(() => {
+    startOutboundMessageWorker();
+  }).catch(error => {
+    logger.error("Server", "Unable to initialize outbound message worker", error);
+  });
+  server.on("close", () => {
+    void waManager.shutdownAll();
+    stopOutboundMessageWorker();
+    void socketAdapter?.close();
+  });
 
   // Start Scheduler
   import("../modules/whatsapp/scheduler").then(m => m.startScheduler());
@@ -66,38 +143,43 @@ app.prepare().then(() => {
 
     // --- WA-AKG Monitor Heartbeat ---
     // Sends a ping every 30 seconds to the monitoring server
-    // Hanya untuk dokumentasi ada berapa layanan WA-AKG yang aktif. 
-    // Hanya untuk memantau tidak bermaksud lain. Semakin banyak WA-AKG yang aktif = semakin semangat saya mengembangkan WA-AKG ini.
-    // Terima kasih telah menggunakan WA-AKG.
-    const MONITOR_URL = "https://api-wa-akg.aikeigroup.net/api/ping";
-    const APP_URL = process.env.BASE_URL || `http://${hostname}:${port}`; // Kamu bisa mengganti ini untuk keamanan WA-AKG kamu. Tapi jangan menghapus semua Heartbeat nya. Terima Kasih.
-    const APP_NAME = process.env.APP_NAME || "WA-AKG";
+    // Telemetry opt-out is supported via ENABLE_TELEMETRY="false" or DISABLE_TELEMETRY="true"
+    const isTelemetryEnabled = process.env.ENABLE_TELEMETRY !== "false" && process.env.DISABLE_TELEMETRY !== "true";
 
-    const sendHeartbeat = async () => {
-      try {
-        await fetch(MONITOR_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            appUrl: APP_URL,
-            appName: APP_NAME,
-            isBackend: true,
-            systemInfo: {
-              platform: process.platform,
-              nodeVersion: process.version,
-              memoryUsage: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB"
-            }
-          }),
-        });
-      } catch (error) {
-        // Silently fail to not disturb the main application
-      }
-    };
+    if (isTelemetryEnabled) {
+      const MONITOR_URL = "https://api-wa-akg.aikeigroup.net/api/ping";
+      const APP_NAME = process.env.APP_NAME || "WA-AKG";
+      const APP_VERSION = `v${pkg.version}`;
 
-    // Initial ping
-    sendHeartbeat();
-    // Interval ping
-    setInterval(sendHeartbeat, 30000);
+      const sendHeartbeat = async () => {
+        try {
+          await fetch(MONITOR_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              appUrl: APP_VERSION,
+              appVersion: pkg.version,
+              appName: APP_NAME,
+              isBackend: true,
+              systemInfo: {
+                platform: process.platform,
+                nodeVersion: process.version,
+                memoryUsage: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB"
+              }
+            }),
+          });
+        } catch {
+          // Silently fail to not disturb the main application
+        }
+      };
+
+      // Initial ping
+      sendHeartbeat();
+      // Interval ping
+      setInterval(sendHeartbeat, 30000);
+    } else {
+      logger.info("Server", "Telemetry heartbeat is disabled via environment configuration.");
+    }
     // --------------------------------
   });
 });

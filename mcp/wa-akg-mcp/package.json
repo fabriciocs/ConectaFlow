@@ -1,0 +1,19 @@
+{
+  "name": "@wa-akg/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MCP server exposing allowlisted WA-AKG OpenAPI operations",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/http.mjs && node --check scripts/production-sessions-check.mjs",
+    "test": "node --test",
+    "test:production-sessions": "node scripts/production-sessions-check.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "zod": "^4.3.5"
+  }
+}

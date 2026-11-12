@@ -1,7 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
-import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUser, getAccessibleSessions } from "@/lib/api-auth";
+import { sanitizeOAuthReadSession } from "@/lib/session-access";
+import { isValidSessionId } from "@/lib/session-id";
 
 export const dynamic = 'force-dynamic';
 
@@ -14,8 +15,13 @@ export async function GET(request: NextRequest) {
         }
 
         // Get sessions based on user role
-        const sessions = await getAccessibleSessions(user.id, user.role);
-        return NextResponse.json({ status: true, message: "Sessions retrieved successfully", data: sessions });
+        let sessions = await getAccessibleSessions(user.id, user.role);
+        if (user.authMethod === "oauth" && user.oauthSessionScope) {
+            const scope = new Set(user.oauthSessionScope);
+            sessions = sessions.filter((item) => scope.has(item.id));
+        }
+        if (user.authMethod === "oauth") sessions = sessions.map(sanitizeOAuthReadSession);
+        return NextResponse.json({ status: true, message: "Sessions retrieved successfully", data: sessions }, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
         console.error("Get sessions error:", error);
         return NextResponse.json({ status: false, message: "Failed to fetch sessions", error: "Failed to fetch sessions" }, { status: 500 });
@@ -35,6 +41,10 @@ export async function POST(request: NextRequest) {
 
         if (!name) {
             return NextResponse.json({ status: false, message: "Session name is required", error: "Session name is required" }, { status: 400 });
+        }
+
+        if (sessionId !== undefined && !isValidSessionId(sessionId)) {
+            return NextResponse.json({ status: false, message: "Invalid sessionId", error: "Invalid sessionId" }, { status: 400 });
         }
 
         // Create session for the authenticated user

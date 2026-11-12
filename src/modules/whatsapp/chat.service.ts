@@ -2,24 +2,102 @@ import { prisma } from "@/lib/prisma";
 import { normalizeJid } from "@/lib/jid-utils";
 import { waManager } from "@/modules/whatsapp/manager";
 import { onMessageSent } from "@/lib/webhook";
+import { getBrandConfig } from "@/lib/branding-server";
+import { resolveBotDisplayName } from "@/lib/branding";
 import Sticker from "wa-sticker-formatter";
+import type { InteractiveMessagePayload, AlbumItem } from "./interactive";
+import type { Prisma } from "@prisma/client";
+import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage } from "@whiskeysockets/baileys";
+
+type OutboundMedia = Buffer | string | { url: string };
+
+interface OutboundMessagePayload extends Record<string, unknown> {
+    text?: string;
+    caption?: string;
+    image?: OutboundMedia;
+    video?: OutboundMedia;
+    document?: OutboundMedia;
+    audio?: OutboundMedia;
+    sticker?: Buffer | string | { url?: string; pack?: string; author?: string };
+    fileName?: string;
+    mimetype?: string;
+    ptt?: boolean;
+    mentions?: string[];
+}
+
+interface WebhookMessageShape {
+    key: WAMessage["key"];
+    message: Record<string, unknown>;
+    messageTimestamp: number;
+}
+
+function getMediaUrl(media: OutboundMedia | undefined): string | undefined {
+    if (media && typeof media === "object" && "url" in media) return media.url;
+    return undefined;
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+async function getDefaultStickerMetadata(sessionId: string) {
+    const [brand, session] = await Promise.all([
+        getBrandConfig(),
+        prisma.session.findUnique({
+            where: { sessionId },
+            select: { botConfig: { select: { botName: true } } }
+        })
+    ]);
+    return {
+        pack: resolveBotDisplayName(session?.botConfig?.botName, brand.name),
+        author: brand.name
+    };
+}
+
+/**
+ * Chat list filter:
+ * - "all": every chat except status/broadcast lists
+ * - "private": only 1:1 chats (no groups, broadcasts or newsletters)
+ * - "groups": only group chats (@g.us)
+ */
+export type ChatListFilter = "all" | "private" | "groups";
+
+interface ChatListItem {
+    jid: string;
+    name: string | null;
+    notify: string | null;
+    profilePic: string | null;
+    lastMessage: {
+        content: string | null;
+        timestamp: string;
+        type: string;
+    };
+}
+
+const CHAT_FILTER_SQL: Record<ChatListFilter, string> = {
+    all: "AND m1.remoteJid NOT LIKE '%@broadcast'",
+    private: "AND m1.remoteJid NOT LIKE '%@g.us' AND m1.remoteJid NOT LIKE '%@broadcast' AND m1.remoteJid NOT LIKE '%@newsletter'",
+    groups: "AND m1.remoteJid LIKE '%@g.us'",
+};
 
 export class ChatService {
     /**
      * Get active chats list for a session with last message preview.
      * Cursor-based pagination — `before` is ISO timestamp of last seen chat.
      * Returns chats with last message timestamp < before (older).
+     * `filter` is optional; when omitted no JID filtering is applied (API behavior).
      */
     static async getChatsList(
         dbSessionId: string,
         limit = 50,
         before?: string,
-        search?: string
+        search?: string,
+        filter?: ChatListFilter
     ) {
         // 1. Get latest message per remoteJid with cursor pagination
         // Uses m1.timestamp < before (when provided) to load older chats
         // Build params: [dbSessionId, dbSessionId, (before?), limit]
-        const qParams: any[] = [dbSessionId, dbSessionId];
+        const qParams: (string | Date | number)[] = [dbSessionId, dbSessionId];
         if (before) qParams.push(new Date(before));
         qParams.push(limit);
 
@@ -39,6 +117,7 @@ export class ChatService {
             ) m2 ON m1.remoteJid = m2.remoteJid AND m1.timestamp = m2.max_ts
             WHERE m1.sessionId = ?
             ${before ? 'AND m1.timestamp < ?' : ''}
+            ${filter && Object.hasOwn(CHAT_FILTER_SQL, filter) ? CHAT_FILTER_SQL[filter] : ''}
             ORDER BY m1.timestamp DESC
             LIMIT ?
         `, ...qParams);
@@ -65,7 +144,7 @@ export class ChatService {
         groups.forEach(g => infoMap.set(g.jid, { name: g.subject, notify: g.subject, profilePic: null }));
 
         // 3. Build result array (already sorted by SQL DESC)
-        const result: any[] = [];
+        const result: ChatListItem[] = [];
         const seenJids = new Set<string>();
         for (const msg of rawLastMessages) {
             if (seenJids.has(msg.remoteJid)) continue;
@@ -129,7 +208,7 @@ export class ChatService {
             if (contact.remoteJidAlt) queryJids.add(contact.remoteJidAlt);
         }
 
-        const where: any = {
+        const where: Prisma.MessageWhereInput = {
             sessionId: dbSessionId,
             remoteJid: { in: Array.from(queryJids) }
         };
@@ -170,7 +249,7 @@ export class ChatService {
             }
         }
 
-        const messagesWithQuote = messages.map((m: any) => {
+        const messagesWithQuote = messages.map((m) => {
             const quoted = m.quoteId ? quotedMessagesMap.get(m.quoteId) : undefined;
             return {
                 ...m,
@@ -191,14 +270,14 @@ export class ChatService {
         };
     }
 
-    static async sendTextMessage(sessionId: string, jid: string, messagePayload: any, mentions?: string[], quotedMessageId?: string) {
+    static async sendTextMessage(sessionId: string, jid: string, messagePayload: OutboundMessagePayload, mentions?: string[], quotedMessageId?: string) {
         const instance = waManager.getInstance(sessionId);
         if (!instance || !instance.socket) {
             throw new Error("WhatsApp session is disconnected or not found");
         }
 
         // Handle quoted/reply message
-        let quotedOption: any = undefined;
+        let quotedOption: WAMessage | undefined;
         if (quotedMessageId) {
             try {
                 const dbSession = await prisma.session.findUnique({ where: { sessionId }, select: { id: true } });
@@ -229,15 +308,15 @@ export class ChatService {
                             message: {
                                 conversation: quotedMsg.content || ""
                             }
-                        };
+                        } as unknown as WAMessage;
                     }
                 }
-            } catch (e) {
-                console.error("Error fetching quoted message (non-fatal):", e);
+            } catch (error) {
+                console.error("Error fetching quoted message (non-fatal):", error);
             }
         }
 
-        let msgPayload = { ...messagePayload };
+        let msgPayload: OutboundMessagePayload = { ...messagePayload };
 
         // Normalize "text" to "caption" if a media message is sent with "text"
         if (msgPayload.text && (msgPayload.image || msgPayload.video || msgPayload.document || msgPayload.audio)) {
@@ -247,65 +326,70 @@ export class ChatService {
             delete msgPayload.text;
         }
 
-        if (msgPayload.sticker && (msgPayload.sticker.url || typeof msgPayload.sticker === 'string')) {
-            const url = msgPayload.sticker.url || msgPayload.sticker;
+        const { safeFetchBuffer } = await import("@/lib/security");
+
+        const stickerPayload = msgPayload.sticker;
+        const stickerUrl = typeof stickerPayload === "string"
+            ? stickerPayload
+            : stickerPayload && typeof stickerPayload === "object" && !Buffer.isBuffer(stickerPayload)
+                ? stickerPayload.url
+                : undefined;
+        if (stickerPayload && stickerUrl) {
             try {
-                const res = await fetch(url);
-                if (!res.ok) throw new Error(`Failed to fetch sticker media`);
-                const buffer = await res.arrayBuffer();
-                const sticker = new Sticker(Buffer.from(buffer), {
-                    pack: msgPayload.sticker.pack || "WA-AKG Bot",
-                    author: msgPayload.sticker.author || "WA-AKG",
+                const { buffer } = await safeFetchBuffer(stickerUrl, { maxBytes: 10 * 1024 * 1024 });
+                const stickerOptions = typeof stickerPayload === "object" && !Buffer.isBuffer(stickerPayload)
+                    ? stickerPayload
+                    : undefined;
+                const defaults = await getDefaultStickerMetadata(sessionId);
+                const sticker = new Sticker(buffer, {
+                    pack: stickerOptions?.pack || defaults.pack,
+                    author: stickerOptions?.author || defaults.author,
                     type: "full",
                     quality: 50
                 });
                 msgPayload = { sticker: await sticker.toBuffer() };
-            } catch (e: any) {
-                throw new Error(`Failed to generate sticker from URL: ${e.message}`);
+            } catch (error) {
+                throw new Error(`Failed to generate sticker from URL: ${errorMessage(error)}`);
             }
         }
 
-        if (msgPayload.image && typeof msgPayload.image === 'object' && msgPayload.image.url) {
+        const imageUrl = getMediaUrl(msgPayload.image);
+        if (imageUrl) {
             try {
-                const res = await fetch(msgPayload.image.url);
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                const buffer = await res.arrayBuffer();
-                msgPayload.image = Buffer.from(buffer);
-            } catch (e: any) {
-                throw new Error(`Failed to fetch image from URL: ${e.message}`);
+                const { buffer } = await safeFetchBuffer(imageUrl, { maxBytes: 25 * 1024 * 1024 });
+                msgPayload.image = buffer;
+            } catch (error) {
+                throw new Error(`Failed to fetch image from URL: ${errorMessage(error)}`);
             }
         }
 
-        if (msgPayload.video && typeof msgPayload.video === 'object' && msgPayload.video.url) {
+        const videoUrl = getMediaUrl(msgPayload.video);
+        if (videoUrl) {
             try {
-                const res = await fetch(msgPayload.video.url);
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                const buffer = await res.arrayBuffer();
-                msgPayload.video = Buffer.from(buffer);
-            } catch (e: any) {
-                throw new Error(`Failed to fetch video from URL: ${e.message}`);
+                const { buffer } = await safeFetchBuffer(videoUrl, { maxBytes: 100 * 1024 * 1024 });
+                msgPayload.video = buffer;
+            } catch (error) {
+                throw new Error(`Failed to fetch video from URL: ${errorMessage(error)}`);
             }
         }
 
-        if (msgPayload.document && typeof msgPayload.document === 'object' && msgPayload.document.url) {
+        const documentUrl = getMediaUrl(msgPayload.document);
+        if (documentUrl) {
             try {
-                const res = await fetch(msgPayload.document.url);
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                const buffer = await res.arrayBuffer();
-                msgPayload.document = Buffer.from(buffer);
-            } catch (e: any) {
-                throw new Error(`Failed to fetch document from URL: ${e.message}`);
+                const { buffer } = await safeFetchBuffer(documentUrl, { maxBytes: 100 * 1024 * 1024 });
+                msgPayload.document = buffer;
+            } catch (error) {
+                throw new Error(`Failed to fetch document from URL: ${errorMessage(error)}`);
             }
         }
 
-        if (msgPayload.audio && typeof msgPayload.audio === 'object' && msgPayload.audio.url) {
+        const audioUrl = getMediaUrl(msgPayload.audio);
+        if (audioUrl) {
             try {
-                const res = await fetch(msgPayload.audio.url);
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                const buffer = await res.arrayBuffer();
-                msgPayload.audio = Buffer.from(buffer);
-            } catch (e: any) {
-                throw new Error(`Failed to fetch audio from URL: ${e.message}`);
+                const { buffer } = await safeFetchBuffer(audioUrl, { maxBytes: 50 * 1024 * 1024 });
+                msgPayload.audio = buffer;
+            } catch (error) {
+                throw new Error(`Failed to fetch audio from URL: ${errorMessage(error)}`);
             }
         }
 
@@ -313,16 +397,16 @@ export class ChatService {
             msgPayload.mentions = mentions;
         }
 
-        const options: any = { mentions: mentions || [] };
+        const options: MiscMessageGenerationOptions & { mentions: string[] } = { mentions: mentions || [] };
         if (quotedOption) {
             options.quoted = quotedOption;
         }
 
-        const sendResult = await instance.socket.sendMessage(jid, msgPayload, options);
+        const sendResult = await instance.socket.sendMessage(jid, msgPayload as AnyMessageContent, options);
 
         // Fire webhook for sent message (non-blocking)
         try {
-            const webhookMsg: any = {
+            const webhookMsg: WebhookMessageShape = {
                 key: sendResult?.key || sendResult || {},
                 message: {
                     conversation: typeof msgPayload.text === 'string' ? msgPayload.text : (msgPayload.caption || "")
@@ -354,7 +438,7 @@ export class ChatService {
             }
 
             onMessageSent(sessionId, webhookMsg).catch(e => console.error("Webhook error:", e));
-        } catch (e) {
+        } catch {
             // Non-blocking — webhook failure shouldn't break message send
         }
 
@@ -378,11 +462,10 @@ export class ChatService {
             throw new Error("WhatsApp session is disconnected or not found");
         }
 
-        const messageOptions: any = {};
+        const messageOptions: { caption?: string; mimetype: string } = { mimetype };
         if (caption) messageOptions.caption = caption;
-        messageOptions.mimetype = mimetype;
 
-        let content: any = {};
+        let content: AnyMessageContent;
 
         if (type === 'image') {
             content = { image: buffer, ...messageOptions };
@@ -393,24 +476,25 @@ export class ChatService {
         } else if (type === 'voice') {
             content = { audio: buffer, mimetype: 'audio/mp4', ptt: true };
         } else if (type === 'document') {
-            content = { document: buffer, mimetype, fileName, ...messageOptions };
+            content = { document: buffer, fileName, ...messageOptions };
         } else if (type === 'sticker') {
+            const defaults = await getDefaultStickerMetadata(sessionId);
             const sticker = new Sticker(buffer, {
-                pack: "WA-AKG Bot",
-                author: "WA-AKG",
+                pack: defaults.pack,
+                author: defaults.author,
                 type: "full",
                 quality: 50
             });
             content = { sticker: await sticker.toBuffer() };
         } else {
-            content = { document: buffer, mimetype, fileName, ...messageOptions };
+            content = { document: buffer, fileName, ...messageOptions };
         }
 
         const sendResult = await instance.socket.sendMessage(jid, content);
 
         // Fire webhook for sent media message (non-blocking)
         try {
-            const webhookMsg: any = {
+            const webhookMsg: WebhookMessageShape = {
                 key: sendResult?.key || sendResult || {},
                 message: {
                     conversation: caption || ""
@@ -432,7 +516,76 @@ export class ChatService {
             }
 
             onMessageSent(sessionId, webhookMsg).catch(e => console.error("Webhook error:", e));
-        } catch (e) {
+        } catch {
+            // Non-blocking
+        }
+
+        return sendResult;
+    }
+
+    /**
+     * Send rich interactive message (Native Flow buttons, single_select list, etc.)
+     */
+    static async sendInteractiveMessage(
+        sessionId: string,
+        jid: string,
+        payload: InteractiveMessagePayload,
+        options: MiscMessageGenerationOptions = {}
+    ) {
+        const instance = waManager.getInstance(sessionId);
+        if (!instance || !instance.socket) {
+            throw new Error("WhatsApp session is disconnected or not found");
+        }
+
+        const sendResult = await instance.socket.sendMessage(jid, {
+            interactiveMessage: payload
+        } as unknown as AnyMessageContent, options);
+
+        // Fire webhook for sent interactive message
+        try {
+            const webhookMsg: WebhookMessageShape = {
+                key: sendResult?.key || {},
+                message: {
+                    conversation: payload.body || payload.title || "Interactive Message"
+                },
+                messageTimestamp: Math.floor(Date.now() / 1000)
+            };
+            onMessageSent(sessionId, webhookMsg).catch(e => console.error("Webhook error:", e));
+        } catch {
+            // Non-blocking
+        }
+
+        return sendResult;
+    }
+
+    /**
+     * Send Album message with multiple images/videos
+     */
+    static async sendAlbumMessage(
+        sessionId: string,
+        jid: string,
+        items: AlbumItem[],
+        options: { caption?: string; quoted?: WAMessage } = {}
+    ) {
+        const instance = waManager.getInstance(sessionId);
+        if (!instance || !instance.socket) {
+            throw new Error("WhatsApp session is disconnected or not found");
+        }
+
+        const sendResult = await instance.socket.sendMessage(jid, {
+            albumMessage: items
+        } as unknown as AnyMessageContent, options);
+
+        try {
+            const webhookMsg: WebhookMessageShape = {
+                key: sendResult?.key || {},
+                message: {
+                    conversation: options.caption || "Album Message"
+                },
+                messageTimestamp: Math.floor(Date.now() / 1000)
+            };
+            onMessageSent(sessionId, webhookMsg).catch(e => console.error("Webhook error:", e));
+        } catch {
             // Non-blocking
         }
 

@@ -1,18 +1,58 @@
-// @ts-nocheck
 import { createSwaggerSpec } from "next-swagger-doc";
+import { DEFAULT_BRAND_DESCRIPTION, DEFAULT_BRAND_NAME, type BrandConfig } from "@/lib/branding";
 
-export const getApiDocs = () => {
+type SwaggerDefinition = NonNullable<Parameters<typeof createSwaggerSpec>[0]>["definition"];
+type SwaggerPath = NonNullable<SwaggerDefinition["paths"]>[string];
+type SwaggerOperation = NonNullable<SwaggerPath["get"]>;
+
+function mergeSwaggerOperations(previous: SwaggerOperation, current: SwaggerOperation): SwaggerOperation {
+    const responses = { ...previous.responses, ...current.responses };
+    for (const [status, previousResponse] of Object.entries(previous.responses || {})) {
+        const currentResponse = current.responses?.[status];
+        if (
+            currentResponse &&
+            "description" in previousResponse &&
+            "description" in currentResponse &&
+            typeof previousResponse.description === "string" &&
+            typeof currentResponse.description === "string"
+        ) {
+            responses[status] = {
+                ...previousResponse,
+                ...currentResponse,
+                description: [previousResponse.description, currentResponse.description].join("\n\n")
+            };
+        }
+    }
+
+    const descriptions = [
+        previous.description,
+        current.description,
+        previous.summary !== current.summary ? previous.summary : undefined
+    ].filter((description): description is string => typeof description === "string" && description.length > 0);
+
+    return {
+        ...previous,
+        ...current,
+        summary: current.summary || previous.summary,
+        ...(descriptions.length ? { description: [...new Set(descriptions)].join("\n\n") } : {}),
+        responses
+    };
+}
+
+export const getApiDocs = (brandConfig?: Pick<BrandConfig, "name" | "description">) => {
+    const brandName = brandConfig?.name || DEFAULT_BRAND_NAME;
+    const brandDescription = brandConfig?.description || DEFAULT_BRAND_DESCRIPTION;
     const spec = createSwaggerSpec({
         apiFolder: "src/app/api",
         definition: {
             openapi: "3.0.0",
             info: {
-                title: "WA-AKG API Documentation",
-                version: "1.6.1",
+                title: `${brandName} API Documentation`,
+                version: "1.7.0",
                 description: `
-# WhatsApp AI Gateway - Complete API Reference
+# ${brandName} - Complete API Reference
 
-Professional WhatsApp Gateway with **93 API endpoints** for complete WhatsApp automation.
+${brandDescription} Professional WhatsApp API for complete automation across sessions, messaging, contacts, media, and webhooks.
 
 ## 🔐 Authentication
 All endpoints require authentication via:
@@ -121,18 +161,31 @@ All endpoints require authentication via:
                             status: { type: "string", example: "PENDING" }
                         }
                     },
+                    WebhookFilters: {
+                        type: "object",
+                        description: "Exact-match criteria combined with AND. Message-specific fields apply only to message.received/message.sent. Values absent from an event do not match.",
+                        properties: {
+                            sessionId: { type: "string" }, senderJid: { type: "string" }, chatJid: { type: "string" },
+                            messageType: { type: "string", enum: ["TEXT", "IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "STICKER", "LOCATION", "CONTACT", "INTERACTIVE_RESPONSE", "BUTTON_RESPONSE", "LIST_RESPONSE"] },
+                            fromMe: { type: "boolean" }, isGroup: { type: "boolean" },
+                            chatType: { type: "string", enum: ["PERSONAL", "GROUP", "STATUS", "NEWSLETTER", "UNKNOWN"] }
+                        }
+                    },
                     Webhook: {
                         type: "object",
                         properties: {
                             id: { type: "string" },
                             sessionId: { type: "string" },
-                            url: { type: "string" },
+                            url: { type: "string", format: "uri", description: "Webhook destination using http:// or https://. Local/private destinations require allowLocal=true." },
                             events: { 
                                 type: "array", 
                                 items: { type: "string" },
                                 description: "Events to subscribe to: message.received, message.sent, message.status, connection.update, group.update, contact.update, status.update, group.participant, message.deleted, message.edited or '*'" 
                             },
-                            secret: { type: "string" }
+                            secret: { type: "string" },
+                            allowLocal: { type: "boolean", default: false, description: "Allow delivery to localhost, private-network, or other local destinations." },
+                            requestHeaders: { type: "string", description: "Optional multiline request headers. Use one Header-Name: value pair per line." }
+                            ,filters: { $ref: "#/components/schemas/WebhookFilters", nullable: true }
                         }
                     },
                     WebhookLog: {
@@ -897,11 +950,28 @@ All endpoints require authentication via:
 
                 // ==================== MESSAGING ====================
 
+                "/messages/{sessionId}/operations/{operationId}": {
+                    get: {
+                        tags: ["Messaging"],
+                        summary: "Get outbound message operation status",
+                        description: "Returns the durable receipt for an idempotent text send.",
+                        parameters: [
+                            { name: "sessionId", in: "path", required: true, schema: { type: "string" } },
+                            { name: "operationId", in: "path", required: true, schema: { type: "string" } }
+                        ],
+                        responses: {
+                            200: { description: "Operation receipt", content: { "application/json": { schema: { $ref: "#/components/schemas/Success" } } } },
+                            401: { $ref: "#/components/responses/Unauthorized" },
+                            403: { description: "Forbidden" },
+                            404: { description: "Operation not found" }
+                        }
+                    }
+                },
                 "/messages/{sessionId}/{jid}/send": {
                     post: {
                         tags: ["Messaging"],
                         summary: "Send message (text/media/sticker)",
-                        description: "Universal endpoint for sending text, images, videos, documents, and stickers. Supports mentions and all WhatsApp message types.",
+                        description: "Universal endpoint for sending text, images, videos, documents, and stickers. Supports mentions and all WhatsApp message types. For text-only requests, an optional Idempotency-Key header creates a durable operation receipt; GET /messages/{sessionId}/operations/{operationId} returns its status.",
                         parameters: [
                             {
                                 name: "sessionId",
@@ -1001,7 +1071,7 @@ All endpoints require authentication via:
                                                     sticker: {
                                                         url: "https://example.com/sticker.webp",
                                                         pack: "My Stickers",
-                                                        author: "WA-AKG"
+                                                        author: brandName
                                                     }
                                                 }
                                             }
@@ -1042,6 +1112,8 @@ All endpoints require authentication via:
                                     }
                                 }
                             },
+                            202: { description: "Idempotent message queued; response includes operationId and status" },
+                            409: { description: "Idempotency-Key was already used with a different request" },
                             400: { description: "Invalid request - jid and message are required" },
                             401: { $ref: "#/components/responses/Unauthorized" },
                             403: { $ref: "#/components/responses/Forbidden" },
@@ -1106,6 +1178,107 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             503: { $ref: "#/components/responses/SessionNotReady" },
                             500: { description: "Failed to send media" }
+                        }
+                    }
+                },
+
+                "/messages/{sessionId}/{jid}/interactive": {
+                    post: {
+                        tags: ["Messaging"],
+                        summary: "Send interactive message (Native Flow buttons, CTA, List)",
+                        description: "Send modern WhatsApp Native Flow interactive messages including quick replies, CTA URL links, CTA call buttons, copy-to-clipboard code, and single select lists.",
+                        parameters: [
+                            {
+                                name: "sessionId",
+                                in: "path",
+                                required: true,
+                                schema: { type: "string" },
+                                description: "Session identifier"
+                            },
+                            {
+                                name: "jid",
+                                in: "path",
+                                required: true,
+                                schema: { type: "string" },
+                                description: "Recipient JID (e.g. 628123456789@s.whatsapp.net or 08123456789)"
+                            }
+                        ],
+                        requestBody: {
+                            required: true,
+                            content: {
+                                "application/json": {
+                                    schema: {
+                                        type: "object",
+                                        properties: {
+                                            title: { type: "string", example: "Interactive Message Title" },
+                                            body: { type: "string", example: "Hello! Please select one of the options below:" },
+                                            footer: { type: "string", example: `Powered by ${brandName}` },
+                                            header: {
+                                                type: "object",
+                                                properties: {
+                                                    title: { type: "string", example: "Announcement" },
+                                                    image: {
+                                                        type: "object",
+                                                        properties: {
+                                                            url: { type: "string", example: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800" }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            buttons: {
+                                                type: "array",
+                                                description: "Array of interactive action buttons",
+                                                items: {
+                                                    type: "object",
+                                                    properties: {
+                                                        type: { type: "string", enum: ["quick_reply", "cta_url", "cta_call", "cta_copy", "single_select"], example: "quick_reply" },
+                                                        displayText: { type: "string", example: "Confirm Order" },
+                                                        id: { type: "string", example: "btn_confirm" },
+                                                        url: { type: "string", example: "https://example.com" },
+                                                        phoneNumber: { type: "string", example: "+628123456789" },
+                                                        copyCode: { type: "string", example: "PROMO2026" },
+                                                        title: { type: "string", example: "Menu List" },
+                                                        sections: {
+                                                            type: "array",
+                                                            items: {
+                                                                type: "object",
+                                                                properties: {
+                                                                    title: { type: "string", example: "Available Packages" },
+                                                                    rows: {
+                                                                        type: "array",
+                                                                        items: {
+                                                                            type: "object",
+                                                                            properties: {
+                                                                                id: { type: "string", example: "pkg_basic" },
+                                                                                title: { type: "string", example: "Basic Plan" },
+                                                                                description: { type: "string", example: "Affordable starter package" }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        responses: {
+                            200: {
+                                description: "Interactive message sent successfully",
+                                content: {
+                                    "application/json": {
+                                        schema: { $ref: "#/components/schemas/Success" }
+                                    }
+                                }
+                            },
+                            400: { description: "Bad Request - Missing required content" },
+                            401: { $ref: "#/components/responses/Unauthorized" },
+                            403: { $ref: "#/components/responses/Forbidden" },
+                            500: { description: "Failed to send interactive message" }
                         }
                     }
                 },
@@ -1731,7 +1904,7 @@ All endpoints require authentication via:
                                         required: ["file"],
                                         properties: {
                                             file: { type: "string", format: "binary" },
-                                            pack: { type: "string", description: "Sticker pack name (default: WA-AKG)" },
+                                            pack: { type: "string", description: `Sticker pack name (default: ${brandName})` },
                                             author: { type: "string", description: "Sticker author name (default: User)" },
                                             type: { type: "string", enum: ["full", "crop", "circle"], description: "Sticker crop type (default: full)" },
                                             quality: { type: "integer", minimum: 1, maximum: 100, description: "Image quality (default: 50)" }
@@ -2400,7 +2573,7 @@ All endpoints require authentication via:
                 },
 
                 "/groups/{sessionId}/{jid}/invite": {
-                    "put": {
+                    ...{"put": {
                         "tags": [
                             "Groups"
                         ],
@@ -2428,7 +2601,7 @@ All endpoints require authentication via:
                                 "description": "Group invite updated"
                             }
                         }
-                    }
+                    }}
                     ,
                     get: {
                         tags: ["Groups"],
@@ -2444,7 +2617,35 @@ All endpoints require authentication via:
                             500: { description: "Failed to get code" }
                         }
                     },
-                    put: {
+                    ...{"put": mergeSwaggerOperations({
+                        "tags": [
+                            "Groups"
+                        ],
+                        "summary": "Update or revoke group invite link",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "jid",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Group invite updated"
+                            }
+                        }
+                    }, {
                         tags: ["Groups"],
                         summary: "Revoke invite code",
                         parameters: [
@@ -2457,7 +2658,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             500: { description: "Failed to revoke code" }
                         }
-                    }
+                    })}
                 },
 
 
@@ -2554,7 +2755,7 @@ All endpoints require authentication via:
                     }
                 },
                 "/profile/{sessionId}/picture": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Profile"
                         ],
@@ -2574,7 +2775,7 @@ All endpoints require authentication via:
                                 "description": "Profile picture removed"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Profile"],
@@ -2603,7 +2804,27 @@ All endpoints require authentication via:
                             503: { $ref: "#/components/responses/SessionNotReady" }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Profile"
+                        ],
+                        "summary": "Remove profile picture",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Profile picture removed"
+                            }
+                        }
+                    }, {
                         tags: ["Profile"],
                         summary: "Remove profile picture",
                         parameters: [
@@ -2615,7 +2836,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             503: { $ref: "#/components/responses/SessionNotReady" }
                         }
-                    }
+                    })}
                 },
 
                 // ==================== AUTO REPLY ====================
@@ -2698,7 +2919,7 @@ All endpoints require authentication via:
                     }
                 },
                 "/autoreplies/{sessionId}/{replyId}": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Auto Replies"
                         ],
@@ -2726,7 +2947,7 @@ All endpoints require authentication via:
                                 "description": "Autoreply deleted"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Auto Reply"],
@@ -2769,7 +2990,35 @@ All endpoints require authentication via:
                             404: { description: "Rule not found" }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Auto Replies"
+                        ],
+                        "summary": "Delete a specific autoreply",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "replyId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Autoreply deleted"
+                            }
+                        }
+                    }, {
                         tags: ["Auto Reply"],
                         summary: "Delete auto-reply rule",
                         parameters: [
@@ -2782,7 +3031,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             404: { description: "Rule not found" }
                         }
-                    }
+                    })}
                 },
 
                 // ==================== SCHEDULER ====================
@@ -2865,7 +3114,7 @@ All endpoints require authentication via:
                     }
                 },
                 "/scheduler/{sessionId}/{scheduleId}": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Scheduler"
                         ],
@@ -2893,7 +3142,7 @@ All endpoints require authentication via:
                                 "description": "Scheduled message deleted"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Scheduler"],
@@ -2937,7 +3186,35 @@ All endpoints require authentication via:
                             404: { description: "Message not found" }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Scheduler"
+                        ],
+                        "summary": "Delete a specific scheduled message",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "scheduleId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Scheduled message deleted"
+                            }
+                        }
+                    }, {
                         tags: ["Scheduler"],
                         summary: "Delete scheduled message",
                         parameters: [
@@ -2950,7 +3227,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             404: { description: "Message not found" }
                         }
-                    }
+                    })}
                 },
                 "/scheduler": {
                     "post": {
@@ -2994,10 +3271,20 @@ All endpoints require authentication via:
                                         required: ["name", "url", "events"],
                                         properties: {
                                             name: { type: "string" },
-                                            url: { type: "string" },
+                                            url: { type: "string", format: "uri", description: "HTTP or HTTPS webhook destination. HTTP/private destinations require allowLocal=true." },
                                             secret: { type: "string" },
-                                            events: { type: "array", items: { type: "string" } }
+                                            allowLocal: { type: "boolean", default: false, description: "Allow delivery to localhost, private-network, or other local destinations." },
+                                            requestHeaders: { type: "string", description: "Optional multiline request headers. Use one Header-Name: value pair per line." },
+                                            events: { type: "array", items: { type: "string" } },
+                                            filters: { $ref: "#/components/schemas/WebhookFilters", description: "Optional exact-match criteria combined with AND; null or {} clears filters." }
                                         }
+                                    },
+                                    example: {
+                                        name: "CRM Integration",
+                                        url: "https://example.com/webhook",
+                                        events: ["message.received", "message.sent"],
+                                        allowLocal: false,
+                                        requestHeaders: "X-Integration-Key: your-value\nX-Source: whatsapp"
                                     }
                                 }
                             }
@@ -3011,7 +3298,7 @@ All endpoints require authentication via:
                     }
                 },
                 "/webhooks/{sessionId}/{id}": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Webhooks"
                         ],
@@ -3039,7 +3326,7 @@ All endpoints require authentication via:
                                 "description": "Webhook deleted"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Webhooks"],
@@ -3055,11 +3342,19 @@ All endpoints require authentication via:
                                         type: "object",
                                         properties: {
                                             name: { type: "string" },
-                                            url: { type: "string" },
+                                            url: { type: "string", format: "uri", description: "HTTP or HTTPS webhook destination. HTTP/private destinations require allowLocal=true." },
                                             secret: { type: "string" },
+                                            allowLocal: { type: "boolean", description: "Allow delivery to localhost, private-network, or other local destinations." },
+                                            requestHeaders: { type: "string", description: "Optional multiline request headers. Use one Header-Name: value pair per line." },
                                             events: { type: "array", items: { type: "string" } },
-                                            isActive: { type: "boolean" }
+                                            isActive: { type: "boolean" },
+                                            filters: { $ref: "#/components/schemas/WebhookFilters", description: "Omit to preserve; null or {} clears; object replaces all criteria." }
                                         }
+                                    },
+                                    example: {
+                                        url: "http://localhost:3000/webhook",
+                                        allowLocal: true,
+                                        requestHeaders: "X-Integration-Key: updated-value\nX-Source: whatsapp"
                                     }
                                 }
                             }
@@ -3071,7 +3366,35 @@ All endpoints require authentication via:
                             404: { description: "Webhook not found" }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Webhooks"
+                        ],
+                        "summary": "Delete a webhook configuration",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "id",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Webhook deleted"
+                            }
+                        }
+                    }, {
                         tags: ["Webhooks"],
                         summary: "Delete webhook",
                         parameters: [
@@ -3084,7 +3407,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             404: { description: "Webhook not found" }
                         }
-                    }
+                    })}
                 },
                 "/webhooks/{id}": {
                     delete: {
@@ -3195,7 +3518,7 @@ All endpoints require authentication via:
 
                 // ==================== USERS ====================
                 "/users": {
-                    "post": {
+                    ...{"post": {
                         "tags": [
                             "Users"
                         ],
@@ -3205,7 +3528,7 @@ All endpoints require authentication via:
                                 "description": "User created"
                             }
                         }
-                    }
+                    }}
                     ,
                     get: {
                         tags: ["Users"],
@@ -3242,7 +3565,17 @@ All endpoints require authentication via:
                             500: { $ref: "#/components/responses/ServerError" }
                         }
                     },
-                    post: {
+                    ...{"post": mergeSwaggerOperations({
+                        "tags": [
+                            "Users"
+                        ],
+                        "summary": "Create user resource",
+                        "responses": {
+                            "200": {
+                                "description": "User created"
+                            }
+                        }
+                    }, {
                         tags: ["Users"],
                         summary: "Create user (SUPERADMIN only)",
                         requestBody: {
@@ -3257,8 +3590,8 @@ All endpoints require authentication via:
                                             password: { type: "string", minLength: 6 },
                                             role: {
                                                 type: "string",
-                                                enum: ["SUPERADMIN", "OWNER", "STAFF"],
-                                                default: "OWNER"
+                                                enum: ["SUPERADMIN", "STAFF", "USER"],
+                                                default: "USER"
                                             }
                                         }
                                     }
@@ -3288,11 +3621,11 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             500: { $ref: "#/components/responses/ServerError" }
                         }
-                    }
+                    })}
                 },
 
                 "/users/{id}": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Users"
                         ],
@@ -3312,7 +3645,7 @@ All endpoints require authentication via:
                                 "description": "User deleted"
                             }
                         }
-                    }
+                    }}
                     ,
                     patch: {
                         tags: ["Users"],
@@ -3329,7 +3662,7 @@ All endpoints require authentication via:
                                             name: { type: "string" },
                                             email: { type: "string" },
                                             password: { type: "string" },
-                                            role: { type: "string", enum: ["SUPERADMIN", "OWNER", "STAFF"] }
+                                            role: { type: "string", enum: ["SUPERADMIN", "STAFF", "USER"] }
                                         }
                                     }
                                 }
@@ -3369,7 +3702,27 @@ All endpoints require authentication via:
                             500: { $ref: "#/components/responses/ServerError" }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Users"
+                        ],
+                        "summary": "Delete user",
+                        "parameters": [
+                            {
+                                "name": "id",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "User deleted"
+                            }
+                        }
+                    }, {
                         tags: ["Users"],
                         summary: "Delete user (SUPERADMIN only)",
                         parameters: [
@@ -3395,11 +3748,11 @@ All endpoints require authentication via:
                             404: { description: "User not found" },
                             500: { $ref: "#/components/responses/ServerError" }
                         }
-                    }
+                    })}
                 },
 
                 "/user/api-key": {
-                    "post": {
+                    ...{"post": {
                         "tags": [
                             "User"
                         ],
@@ -3409,8 +3762,8 @@ All endpoints require authentication via:
                                 "description": "API Key created"
                             }
                         }
-                    },
-                    "delete": {
+                    }},
+                    ...{"delete": {
                         "tags": [
                             "User"
                         ],
@@ -3420,7 +3773,7 @@ All endpoints require authentication via:
                                 "description": "API Key revoked"
                             }
                         }
-                    }
+                    }}
                     ,
                     get: {
                         tags: ["Users"],
@@ -3442,7 +3795,17 @@ All endpoints require authentication via:
                             401: { $ref: "#/components/responses/Unauthorized" }
                         }
                     },
-                    post: {
+                    ...{"post": mergeSwaggerOperations({
+                        "tags": [
+                            "User"
+                        ],
+                        "summary": "Generate a new API Key",
+                        "responses": {
+                            "200": {
+                                "description": "API Key created"
+                            }
+                        }
+                    }, {
                         tags: ["Users"],
                         summary: "Generate new API key",
                         responses: {
@@ -3462,8 +3825,18 @@ All endpoints require authentication via:
                             401: { $ref: "#/components/responses/Unauthorized" },
                             500: { description: "Failed to generate API key" }
                         }
-                    },
-                    delete: {
+                    })},
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "User"
+                        ],
+                        "summary": "Revoke API Key",
+                        "responses": {
+                            "200": {
+                                "description": "API Key revoked"
+                            }
+                        }
+                    }, {
                         tags: ["Users"],
                         summary: "Revoke API key",
                         responses: {
@@ -3478,7 +3851,7 @@ All endpoints require authentication via:
                             401: { $ref: "#/components/responses/Unauthorized" },
                             500: { description: "Failed to revoke API key" }
                         }
-                    }
+                    })}
                 },
 
                 "/groups/{sessionId}/{jid}": {
@@ -3558,7 +3931,7 @@ All endpoints require authentication via:
                     }
                 },
                 "/groups/{sessionId}/{jid}/picture": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Groups"
                         ],
@@ -3586,7 +3959,7 @@ All endpoints require authentication via:
                                 "description": "Group picture removed"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Groups"],
@@ -3610,7 +3983,35 @@ All endpoints require authentication via:
                         },
                         responses: { 200: { description: "Picture updated" } }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Groups"
+                        ],
+                        "summary": "Remove group picture",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "jid",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Group picture removed"
+                            }
+                        }
+                    }, {
                         tags: ["Groups"],
                         summary: "Remove group picture",
                         parameters: [
@@ -3618,7 +4019,7 @@ All endpoints require authentication via:
                             { name: "jid", in: "path", required: true, schema: { type: "string" } }
                         ],
                         responses: { 200: { description: "Picture removed" } }
-                    }
+                    })}
                 },
                 "/groups/{sessionId}/{jid}/settings": {
                     put: {
@@ -3710,7 +4111,7 @@ All endpoints require authentication via:
                 },
                 // ==================== LABELS ====================
                 "/labels/{sessionId}": {
-                    "post": {
+                    ...{"post": {
                         "tags": [
                             "Labels"
                         ],
@@ -3750,7 +4151,7 @@ All endpoints require authentication via:
                                 "description": "Label created"
                             }
                         }
-                    },
+                    }},
                     "put": {
                         "tags": [
                             "Labels"
@@ -3821,7 +4222,47 @@ All endpoints require authentication via:
                             404: { description: "Session not found" }
                         }
                     },
-                    post: {
+                    ...{"post": mergeSwaggerOperations({
+                        "tags": [
+                            "Labels"
+                        ],
+                        "summary": "Create a label",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": [
+                                            "name"
+                                        ],
+                                        "properties": {
+                                            "name": {
+                                                "type": "string"
+                                            },
+                                            "color": {
+                                                "type": "integer"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "Label created"
+                            }
+                        }
+                    }, {
                         tags: ["Labels"],
                         summary: "Create label",
                         description: "Create new label with color (0-19 index)",
@@ -3861,10 +4302,10 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             500: { description: "Failed to create label" }
                         }
-                    }
+                    })}
                 },
                 "/labels/{sessionId}/{labelId}": {
-                    "delete": {
+                    ...{"delete": {
                         "tags": [
                             "Labels"
                         ],
@@ -3892,7 +4333,7 @@ All endpoints require authentication via:
                                 "description": "Label deleted"
                             }
                         }
-                    }
+                    }}
                     ,
                     put: {
                         tags: ["Labels"],
@@ -3921,7 +4362,35 @@ All endpoints require authentication via:
                             }
                         }
                     },
-                    delete: {
+                    ...{"delete": mergeSwaggerOperations({
+                        "tags": [
+                            "Labels"
+                        ],
+                        "summary": "Delete a specific label",
+                        "parameters": [
+                            {
+                                "name": "sessionId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            {
+                                "name": "labelId",
+                                "in": "path",
+                                "required": true,
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Label deleted"
+                            }
+                        }
+                    }, {
                         tags: ["Labels"],
                         summary: "Delete label",
                         parameters: [
@@ -3934,7 +4403,7 @@ All endpoints require authentication via:
                                 content: { "application/json": { schema: { $ref: "#/components/schemas/Success" } } }
                             }
                         }
-                    }
+                    })}
                 },
                 "/labels/{sessionId}/chat/{jid}/labels": {
                     get: {
@@ -3983,7 +4452,7 @@ All endpoints require authentication via:
 
                 // ==================== NOTIFICATIONS ====================
                 "/notifications": {
-                    "post": {
+                    ...{"post": {
                         "tags": [
                             "Notifications"
                         ],
@@ -3993,7 +4462,7 @@ All endpoints require authentication via:
                                 "description": "Notification processed"
                             }
                         }
-                    }
+                    }}
                     ,
                     get: {
                         tags: ["Notifications"],
@@ -4027,7 +4496,17 @@ All endpoints require authentication via:
                             500: { description: "Error fetching notifications" }
                         }
                     },
-                    post: {
+                    ...{"post": mergeSwaggerOperations({
+                        "tags": [
+                            "Notifications"
+                        ],
+                        "summary": "Send or register a notification",
+                        "responses": {
+                            "200": {
+                                "description": "Notification processed"
+                            }
+                        }
+                    }, {
                         tags: ["Notifications"],
                         summary: "Create notification",
                         description: "Send a notification to a specific user or broadcast to all (Superadmin only)",
@@ -4069,7 +4548,7 @@ All endpoints require authentication via:
                             403: { $ref: "#/components/responses/Forbidden" },
                             500: { description: "Error creating notification" }
                         }
-                    }
+                    })}
                 },
                 "/notifications/read": {
                     patch: {
@@ -4137,7 +4616,7 @@ All endpoints require authentication via:
 
                 // ==================== SYSTEM ====================
                 "/settings/system": {
-                    "post": {
+                    ...{"post": {
                         "tags": [
                             "Settings"
                         ],
@@ -4147,7 +4626,7 @@ All endpoints require authentication via:
                                 "description": "System settings updated"
                             }
                         }
-                    }
+                    }}
                     ,
                     get: {
                         tags: ["System"],
@@ -4161,7 +4640,7 @@ All endpoints require authentication via:
                                             type: "object",
                                             properties: {
                                                 id: { type: "string", example: "default" },
-                                                appName: { type: "string", example: "WA-AKG" },
+                                                appName: { type: "string", example: brandName },
                                                 logoUrl: { type: "string", example: "https://example.com/logo.png" },
                                                 timezone: { type: "string", example: "Asia/Jakarta" }
                                             }
@@ -4171,7 +4650,17 @@ All endpoints require authentication via:
                             }
                         }
                     },
-                    post: {
+                    ...{"post": mergeSwaggerOperations({
+                        "tags": [
+                            "Settings"
+                        ],
+                        "summary": "Update system settings",
+                        "responses": {
+                            "200": {
+                                "description": "System settings updated"
+                            }
+                        }
+                    }, {
                         tags: ["System"],
                         summary: "Update system settings",
                         description: "Update global system configuration (Superadmin/Owner only)",
@@ -4210,7 +4699,7 @@ All endpoints require authentication via:
                             401: { $ref: "#/components/responses/Unauthorized" },
                             500: { description: "Failed to update settings" }
                         }
-                    }
+                    })}
                 },
                 "/status/{sessionId}/update": {
                     post: {

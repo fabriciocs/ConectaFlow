@@ -1,4 +1,5 @@
 "use client";
+import { apiUrl } from "@/lib/api-url";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
@@ -6,14 +7,15 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { MessageSquarePlus, Search, MessageCircle, X, Tag, MoreHorizontal, CornerUpLeft, Trash2, Info, Check } from "lucide-react";
+import { MessageSquarePlus, Search, MessageCircle, X, Tag, Info, Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { getChatsStatus } from "@/app/dashboard/chat/actions";
 import { useSocket } from "./socket-context";
 import { toast } from "sonner";
+import { useTranslations } from "next-intl";
+import type { ChatListFilter } from "@/modules/whatsapp/chat.service";
 
 interface ChatContact {
     jid: string;
@@ -33,6 +35,13 @@ interface LabelData {
     colorHex: string;
 }
 
+interface IncomingChatMessage {
+    remoteJid?: string;
+    content: string | null;
+    timestamp: string;
+    type: string;
+}
+
 interface ChatListProps {
     sessionId: string;
     onSelectChat: (jid: string, name?: string) => void;
@@ -40,6 +49,30 @@ interface ChatListProps {
 }
 
 const PAGE_SIZE = parseInt(process.env.NEXT_PUBLIC_CHAT_PAGE_SIZE || "50", 10);
+
+const FILTER_STORAGE_KEY = "chat-list-filter";
+const FILTER_OPTIONS: { value: ChatListFilter; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "private", label: "Chats" },
+    { value: "groups", label: "Groups" },
+];
+
+function readStoredFilter(): ChatListFilter {
+    try {
+        const stored = localStorage.getItem(FILTER_STORAGE_KEY);
+        if (FILTER_OPTIONS.some(o => o.value === stored)) return stored as ChatListFilter;
+    } catch { /* storage unavailable */ }
+    return "all";
+}
+
+// Client-side mirror of the SQL filter in ChatService.getChatsList (used for realtime updates)
+function matchesFilter(jid: string, filter: ChatListFilter): boolean {
+    if (jid.endsWith("@broadcast")) return false;
+    const isGroup = jid.endsWith("@g.us");
+    if (filter === "groups") return isGroup;
+    if (filter === "private") return !isGroup && !jid.endsWith("@newsletter");
+    return true;
+}
 
 function getDisplayName(chat: ChatContact): string {
     return chat.name || chat.notify || chat.jid.split('@')[0];
@@ -75,15 +108,20 @@ function LabelAssignPopover({ sessionId, jid, children }: { sessionId: string; j
         setLoading(true);
         try {
             const [labelRes, assignedRes] = await Promise.all([
-                fetch(`/api/labels/${sessionId}`),
-                fetch(`/api/labels/${sessionId}/chats?jid=${encodeURIComponent(jid)}`)
+                fetch(apiUrl(`/api/labels/${sessionId}`)),
+                fetch(apiUrl(`/api/labels/${sessionId}/chats?jid=${encodeURIComponent(jid)}`))
             ]);
             const labelData = await labelRes.json();
             const assignedData = await assignedRes.json();
 
             if (labelRes.ok) setLabels(labelData.data?.labels || []);
             if (assignedRes.ok) {
-                setAssigned(new Set((assignedData.data || []).map((cl: any) => cl.labelId)));
+                const assignments: unknown[] = Array.isArray(assignedData.data) ? assignedData.data : [];
+                const labelIds = assignments.flatMap((item) => {
+                    if (typeof item !== "object" || item === null || !("labelId" in item)) return [];
+                    return typeof item.labelId === "string" ? [item.labelId] : [];
+                });
+                setAssigned(new Set(labelIds));
             }
         } catch (e) {
             console.error("Failed to fetch labels", e);
@@ -99,7 +137,7 @@ function LabelAssignPopover({ sessionId, jid, children }: { sessionId: string; j
     const toggleLabel = async (labelId: string) => {
         const isAssigned = assigned.has(labelId);
         try {
-            const res = await fetch(`/api/labels/${sessionId}/chat/${encodeURIComponent(jid)}/labels`, {
+            const res = await fetch(apiUrl(`/api/labels/${sessionId}/chat/${encodeURIComponent(jid)}/labels`), {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ labelIds: [labelId], action: isAssigned ? "remove" : "add" })
@@ -107,12 +145,13 @@ function LabelAssignPopover({ sessionId, jid, children }: { sessionId: string; j
             if (res.ok) {
                 setAssigned(prev => {
                     const next = new Set(prev);
-                    isAssigned ? next.delete(labelId) : next.add(labelId);
+                    if (isAssigned) next.delete(labelId);
+                    else next.add(labelId);
                     return next;
                 });
                 toast.success(isAssigned ? "Label removed" : "Label assigned");
             }
-        } catch (e) {
+        } catch {
             toast.error("Failed to update label");
         }
     };
@@ -150,7 +189,7 @@ function LabelAssignPopover({ sessionId, jid, children }: { sessionId: string; j
 
 // ─── Context Menu ──────────────────
 interface CtxMenuState { x: number; y: number; jid: string; name: string; }
-function ChatContextMenu({ state, onClose, sessionId, onSelect }: { state: CtxMenuState; onClose: () => void; sessionId: string; onSelect: (jid: string, name?: string) => void }) {
+function ChatContextMenu({ state, onClose, onSelect }: { state: CtxMenuState; onClose: () => void; onSelect: (jid: string, name?: string) => void }) {
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => {
         const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
@@ -192,7 +231,7 @@ function ChatRow({
     return (
         <>
             {ctxMenu && (
-                <ChatContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} sessionId={sessionId} onSelect={onSelect} />
+                <ChatContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} onSelect={onSelect} />
             )}
             <div
                 className={cn(
@@ -258,6 +297,7 @@ function SkeletonRow() {
 
 // ─── Main ──────────────────────────
 export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps) {
+    const t = useTranslations("chat");
     const [chats, setChats] = useState<ChatContact[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchInput, setSearchInput] = useState("");
@@ -265,26 +305,49 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
     const [isNewChatOpen, setIsNewChatOpen] = useState(false);
     const [newChatNumber, setNewChatNumber] = useState("");
     const [hasMore, setHasMore] = useState(true);
+    const [filter, setFilter] = useState<ChatListFilter>("all");
+    const [filterReady, setFilterReady] = useState(false);
+
+    const filterOptions: { value: ChatListFilter; label: string }[] = useMemo(() => [
+        { value: "all", label: t("filterAll") },
+        { value: "private", label: t("filterChats") },
+        { value: "groups", label: t("filterGroups") },
+    ], [t]);
     // Label dots per JID — {colorHex}[]
     const [chatLabelMap, setChatLabelMap] = useState<Map<string, {colorHex: string}[]>>(new Map());
 
     const { getSocket, joinSession } = useSocket();
     const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const cursorRef = useRef<string | undefined>(undefined);
     const chatsRef = useRef<ChatContact[]>(chats);
     chatsRef.current = chats;
     const fetchingRef = useRef(false);
+    // Incremented on every list reset so responses from a previous filter/search are discarded
+    const requestIdRef = useRef(0);
+
+    // Load persisted filter after mount (localStorage is unavailable during SSR)
+    useEffect(() => {
+        setFilter(readStoredFilter());
+        setFilterReady(true);
+    }, []);
+
+    const handleFilterChange = (value: ChatListFilter) => {
+        if (value === filter) return;
+        setFilter(value);
+        try { localStorage.setItem(FILTER_STORAGE_KEY, value); } catch { /* storage unavailable */ }
+    };
 
     const fetchChats = useCallback(async (cursor?: string, append = false) => {
         if (fetchingRef.current) return;
         fetchingRef.current = true;
+        const requestId = requestIdRef.current;
         try {
             if (!cursor) setLoading(true);
-            const rawChats: any = await getChatsStatus(sessionId, PAGE_SIZE, cursor || undefined, searchQuery || undefined);
+            const rawChats = await getChatsStatus(sessionId, PAGE_SIZE, cursor || undefined, searchQuery || undefined, filter);
+            if (requestId !== requestIdRef.current) return;
             
             const processChats = (newChatsList: ChatContact[], existingChatsList: ChatContact[] = []) => {
                 const merged = new Map(existingChatsList.map(c => [c.jid, c]));
-                (newChatsList || []).forEach((c: any) => {
+                (newChatsList || []).forEach((c) => {
                     const existing = merged.get(c.jid);
                     if (!existing || (c.lastMessage?.timestamp && (!existing.lastMessage?.timestamp || new Date(c.lastMessage.timestamp) > new Date(existing.lastMessage.timestamp)))) {
                         merged.set(c.jid, c);
@@ -302,12 +365,21 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
         } catch (error) {
             console.error("Failed to load chats", error);
         } finally {
-            setLoading(false);
-            fetchingRef.current = false;
+            if (requestId === requestIdRef.current) {
+                setLoading(false);
+                fetchingRef.current = false;
+            }
         }
-    }, [sessionId, searchQuery]);
+    }, [sessionId, searchQuery, filter]);
 
-    useEffect(() => { setChats([]); setHasMore(true); fetchChats(); }, [fetchChats]);
+    useEffect(() => {
+        if (!filterReady) return;
+        requestIdRef.current++;
+        fetchingRef.current = false;
+        setChats([]);
+        setHasMore(true);
+        fetchChats();
+    }, [fetchChats, filterReady]);
 
     useEffect(() => {
         const socket = getSocket();
@@ -315,7 +387,9 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
         const onConnect = () => joinSession(sessionId);
         if (socket.connected) joinSession(sessionId);
         socket.on("connect", onConnect);
-        const handler = async (newMessages: any[]) => {
+        const handler = async (incoming: IncomingChatMessage[]) => {
+            const newMessages = incoming.filter(msg => msg.remoteJid && matchesFilter(msg.remoteJid, filter));
+            if (newMessages.length === 0) return;
             let needsReload = false;
             setChats(prev => {
                 const updated = [...prev];
@@ -337,7 +411,7 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
         };
         socket.on("message.update", handler);
         return () => { socket.off("connect", onConnect); socket.off("message.update", handler); };
-    }, [sessionId, getSocket, joinSession, fetchChats]);
+    }, [sessionId, getSocket, joinSession, fetchChats, filter]);
 
     // Fetch label assignments for all chats
     useEffect(() => {
@@ -345,7 +419,7 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
         (async () => {
             try {
                 // Batch fetch all chat-label assignments in 1 call
-                const res = await fetch(`/api/labels/${sessionId}/chats`);
+                const res = await fetch(apiUrl(`/api/labels/${sessionId}/chats`));
                 if (!res.ok) return;
                 const data = await res.json();
                 const map = new Map<string, { colorHex: string }[]>();
@@ -401,16 +475,9 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
         setNewChatNumber("");
     };
 
-    if (loading && chats.length === 0) {
-        return (
-            <div className="flex flex-col h-full overflow-hidden">
-                <div className="p-3 space-y-3">
-                    <Skeleton className="h-9 w-full rounded-lg" />
-                    {[1, 2, 3, 4, 5].map(i => <SkeletonRow key={i} />)}
-                </div>
-            </div>
-        );
-    }
+    const emptyLabel = searchQuery
+        ? t("emptySearch")
+        : filter === "groups" ? t("emptyGroups") : t("emptyChats");
 
     return (
         <div className="flex flex-col h-full overflow-hidden bg-background">
@@ -418,7 +485,7 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
             <div className="shrink-0 px-3 pt-3 pb-2 space-y-2 border-b border-border/10">
                 <div className="flex justify-between items-center">
                     <h3 className="font-semibold text-base text-foreground">
-                        Chats
+                        {t("title")}
                         {chats.length > 0 && <span className="ml-1.5 text-xs font-normal text-muted-foreground">({chats.length})</span>}
                     </h3>
                     <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg"
@@ -429,20 +496,36 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
 
                 <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                    <Input placeholder="Search chats..." value={searchInput}
+                    <Input placeholder={t("searchPlaceholder")} value={searchInput}
                         onChange={(e) => handleSearchChange(e.target.value)}
                         className="h-8 pl-8 text-sm bg-muted/50 border-0 rounded-lg focus-visible:ring-1" />
                 </div>
 
+                <div role="tablist" aria-label="Filter chats" className="flex gap-1 p-0.5 bg-muted/50 rounded-lg">
+                    {filterOptions.map(option => (
+                        <button key={option.value} type="button" role="tab"
+                            aria-selected={filter === option.value}
+                            onClick={() => handleFilterChange(option.value)}
+                            className={cn(
+                                "flex-1 h-7 rounded-md text-xs font-medium transition-colors cursor-pointer",
+                                filter === option.value
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                            )}>
+                            {option.label}
+                        </button>
+                    ))}
+                </div>
+
                 {isNewChatOpen && (
                     <div className="p-2.5 bg-muted/30 rounded-lg space-y-2 border border-border/40">
-                        <Label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Phone Number</Label>
+                        <Label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">{t("phoneNumber")}</Label>
                         <div className="flex gap-1.5">
                             <Input placeholder="628123456789" value={newChatNumber}
                                 onChange={(e) => setNewChatNumber(e.target.value)}
                                 onKeyDown={(e) => e.key === "Enter" && handleStartNewChat()}
                                 className="h-8 text-sm" />
-                            <Button size="sm" className="h-8 px-3" onClick={handleStartNewChat}>Go</Button>
+                            <Button size="sm" className="h-8 px-3" onClick={handleStartNewChat}>{t("go")}</Button>
                         </div>
                     </div>
                 )}
@@ -450,12 +533,16 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
 
             {/* Chat list */}
             <div className="flex-1 min-h-0">
-                {filteredChats.length === 0 ? (
+                {loading && chats.length === 0 ? (
+                    <div className="py-1">
+                        {[1, 2, 3, 4, 5].map(i => <SkeletonRow key={i} />)}
+                    </div>
+                ) : filteredChats.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
                         <div className="h-12 w-12 rounded-full bg-muted/50 flex items-center justify-center mb-3">
                             <MessageCircle className="h-6 w-6 text-muted-foreground/50" />
                         </div>
-                        <p className="text-sm text-muted-foreground">{searchQuery ? "No chats match your search" : "No chats yet"}</p>
+                        <p className="text-sm text-muted-foreground">{emptyLabel}</p>
                     </div>
                 ) : (
                     <Virtuoso style={{ height: "100%" }} data={filteredChats}
@@ -463,7 +550,7 @@ export function ChatList({ sessionId, onSelectChat, selectedJid }: ChatListProps
                         endReached={handleEndReached} increaseViewportBy={200}
                         components={{ Footer: () => hasMore && !loading ? (
                             <div className="py-4 text-center">
-                                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Scroll for more</span>
+                                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{t("scrollForMore")}</span>
                             </div>
                         ) : null }} />
                 )}

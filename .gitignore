@@ -48,6 +48,14 @@ next-env.d.ts
 server.log
 /logs/
 
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
 # Security: operational backup material and private age identities never belong in Git
 /backups/
 **/.age-backup-key

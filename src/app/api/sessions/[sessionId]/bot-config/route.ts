@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
-import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import { getAuthenticatedUser, canAccessSession, isSessionOwner } from "@/lib/api-auth";
+import { sanitizeSharedSession, sanitizeReadOnlyBotConfig } from "@/lib/session-access";
+import { getBrandConfig } from "@/lib/branding-server";
+import { getDefaultBotName, resolveBotDisplayName } from "@/lib/branding";
 
 export async function GET(
     request: NextRequest,
@@ -19,8 +22,9 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
         }
 
-        // @ts-ignore
-        const session = await (prisma as any).session.findUnique({
+        const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+
+        const session = await prisma.session.findUnique({
             where: { sessionId },
             select: { id: true, botConfig: true }
         });
@@ -29,8 +33,11 @@ export async function GET(
             return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
         }
 
-        // Return config or default if null
-        session.botConfig = session.botConfig || {
+        const brand = await getBrandConfig();
+
+        // Return config or default if null. Legacy persisted values are only
+        // normalized in the response; the database is not migrated here.
+        const botConfig = session.botConfig || {
             enabled: true,
             botMode: 'OWNER',
             botAllowedJids: [],
@@ -41,7 +48,7 @@ export async function GET(
             enableSticker: true,
             enablePing: true,
             enableUptime: true,
-            botName: "WA-AKG Bot",
+            botName: getDefaultBotName(brand.name),
             removeBgApiKey: null,
             enableVideoSticker: true,
             maxStickerDuration: 10,
@@ -56,7 +63,15 @@ export async function GET(
             alwaysOnline: false
         };
 
-        return NextResponse.json({ status: true, message: "Bot config fetched successfully", data: session.botConfig });
+        const responseConfig = user.authMethod === "oauth"
+            ? sanitizeReadOnlyBotConfig(botConfig)
+            : isOwner
+            ? botConfig
+            : sanitizeSharedSession({ botConfig }).botConfig;
+        const brandedResponseConfig = responseConfig
+            ? { ...responseConfig, botName: resolveBotDisplayName(responseConfig.botName, brand.name) }
+            : responseConfig;
+        return NextResponse.json({ status: true, message: "Bot config fetched successfully", data: brandedResponseConfig });
     } catch (error) {
         console.error("Get Bot Config Error:", error);
         return NextResponse.json({ status: false, message: "Internal Server Error", error: "Internal Server Error" }, { status: 500 });
@@ -73,10 +88,11 @@ export async function POST(
         const user = await getAuthenticatedUser(request);
         if (!user) return NextResponse.json({ status: false, message: "Unauthorized", error: "Unauthorized" }, { status: 401 });
 
-        const canAccess = await canAccessSession(user.id, user.role, sessionId);
-        if (!canAccess) return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
+        const isOwner = await isSessionOwner(user.id, user.role, sessionId);
+        if (!isOwner) return NextResponse.json({ status: false, message: "Forbidden - Only the session owner can update bot config", error: "Forbidden" }, { status: 403 });
 
         const body = await request.json();
+        const brand = await getBrandConfig();
 
         // Find session DB ID
         const session = await prisma.session.findUnique({
@@ -87,8 +103,7 @@ export async function POST(
         if (!session) return NextResponse.json({ status: false, message: "Session not found", error: "Session not found" }, { status: 404 });
 
         // Upsert Config
-        // @ts-ignore
-        const config = await (prisma as any).botConfig.upsert({
+        const config = await prisma.botConfig.upsert({
             where: { sessionId: session.id },
             create: {
                 sessionId: session.id,
@@ -99,6 +114,7 @@ export async function POST(
                 autoReplyMode: body.autoReplyMode || 'ALL',
                 autoReplyAllowedJids: body.autoReplyAllowedJids || [],
                 autoReplyBlockedJids: body.autoReplyBlockedJids || [],
+                botName: body.botName ?? getDefaultBotName(brand.name),
 
                 enableSticker: body.enableSticker ?? true,
                 enableVideoSticker: body.enableVideoSticker ?? true,
@@ -142,7 +158,8 @@ export async function POST(
             }
         });
 
-        return NextResponse.json({ status: true, message: "Bot config updated successfully", data: config });
+        const brandedConfig = { ...config, botName: resolveBotDisplayName(config.botName, brand.name) };
+        return NextResponse.json({ status: true, message: "Bot config updated successfully", data: brandedConfig });
     } catch (error) {
         console.error("Update Bot Config Error:", error);
         return NextResponse.json({ status: false, message: "Failed to update config", error: "Failed to update config" }, { status: 500 });

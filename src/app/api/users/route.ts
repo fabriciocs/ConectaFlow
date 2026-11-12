@@ -1,5 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Role as UserRole } from "@prisma/client";
 import { getAuthenticatedUser, isAdmin } from "@/lib/api-auth";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -8,7 +9,7 @@ const createUserSchema = z.object({
     name: z.string().min(2),
     email: z.string().email(),
     password: z.string().min(6),
-    role: z.enum(["SUPERADMIN", "OWNER", "STAFF"]).default("OWNER"),
+    role: z.enum(["SUPERADMIN", "STAFF", "USER"]).default("USER"),
 });
 
 export async function GET(request: NextRequest) {
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
         });
 
         return NextResponse.json({ status: true, message: "Users fetched successfully", data: users });
-    } catch (error) {
+    } catch {
         return NextResponse.json({ status: false, message: "Failed to fetch users", error: "Failed to fetch users" }, { status: 500 });
     }
 }
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
                 name,
                 email,
                 password: hashedPassword,
-                role: role as any
+            role: role as UserRole
             },
             select: {
                 id: true,

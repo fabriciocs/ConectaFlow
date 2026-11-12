@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { getAuthenticatedUser, canAccessSession, isAdmin } from "@/lib/api-auth";
+import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
 
 // GET: List Auto Replies
 export async function GET(
@@ -32,7 +32,7 @@ export async function GET(
 
         const rules = await prisma.autoReply.findMany({
             where: { sessionId: session.id },
-            include: { session: true },
+            include: { session: { select: { id: true, sessionId: true, name: true, status: true } } },
             orderBy: { createdAt: 'desc' }
         });
 
@@ -64,6 +64,17 @@ export async function POST(
             return NextResponse.json({ status: false, message: "Keyword and either response or media are required", error: "Missing required fields" }, { status: 400 });
         }
 
+        if (isMedia && mediaUrl) {
+            const { validateSafeUrl } = await import("@/lib/security");
+            const urlValidation = await validateSafeUrl(mediaUrl);
+            if (!urlValidation.valid) {
+                return NextResponse.json(
+                    { status: false, message: `Invalid media URL: ${urlValidation.error}`, error: urlValidation.error },
+                    { status: 400 }
+                );
+            }
+        }
+
         const canAccess = await canAccessSession(user.id, user.role, sessionId);
         if (!canAccess) {
             return NextResponse.json({ status: false, message: "Forbidden - Cannot access this session", error: "Forbidden - Cannot access this session" }, { status: 403 });
@@ -86,7 +97,6 @@ export async function POST(
             isMedia: isMedia || false,
             mediaUrl: mediaUrl || null,
             mediaType: mediaType || null,
-            // @ts-ignore: triggerType exists in generated schema but may be stale in editor types
             triggerType: (triggerType as string) || "ALL"
         };
 

@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import { waManager } from "@/modules/whatsapp/manager";
 import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
+import type { AnyMessageContent } from "@whiskeysockets/baileys";
 
 // POST: Send formatted text message with options (List/Button alternative)
 export async function POST(
@@ -17,7 +18,7 @@ export async function POST(
         }
 
         const body = await request.json();
-        const { title, options, footer } = body;
+        const { title, options, footer, buttonText, legacyText } = body;
 
         if (!title || !options || !Array.isArray(options)) {
             return NextResponse.json({ status: false, message: "title and options (array) are required", error: "title and options (array) are required" }, { status: 400 });
@@ -38,19 +39,52 @@ export async function POST(
             return NextResponse.json({ status: false, message: "Session not ready", error: "Session not ready" }, { status: 503 });
         }
 
-        // Format text with title and options list
-        let formattedText = `*${title}*\n\n`;
-        options.forEach((option: string, index: number) => {
-            formattedText += `${index + 1}. ${option}\n`;
-        });
-        if (footer) {
-            formattedText += `\n_${footer}_`;
-        }
+        if (legacyText) {
+            // Format text with title and options list (legacy fallback)
+            let formattedText = `*${title}*\n\n`;
+            options.forEach((option: string, index: number) => {
+                formattedText += `${index + 1}. ${option}\n`;
+            });
+            if (footer) {
+                formattedText += `\n_${footer}_`;
+            }
 
-        // Send formatted text message
-        await instance.socket.sendMessage(jid, {
-            text: formattedText
-        });
+            await instance.socket.sendMessage(jid, {
+                text: formattedText
+            });
+        } else {
+            // Modern WhatsApp Native Flow single_select interactive message
+            const rows = options.map((option: unknown, idx: number) => {
+                const opt = typeof option === "string" ? option : (option && typeof option === "object" ? option as Record<string, unknown> : {});
+                if (typeof opt === "string") {
+                    return { id: `opt_${idx + 1}`, title: opt, description: "" };
+                }
+                return {
+                    id: typeof opt.id === "string" ? opt.id : `opt_${idx + 1}`,
+                    title: typeof opt.title === "string" ? opt.title : String(opt),
+                    description: typeof opt.description === "string" ? opt.description : ""
+                };
+            });
+
+            await instance.socket.sendMessage(jid, {
+                interactiveMessage: {
+                    title: title,
+                    footer: footer || undefined,
+                    buttons: [
+                        {
+                            type: "single_select",
+                            title: buttonText || "Pilih Opsi",
+                            sections: [
+                                {
+                                    title: "Pilihan",
+                                    rows
+                                }
+                            ]
+                        }
+                    ]
+                }
+            } as unknown as AnyMessageContent);
+        }
 
         return NextResponse.json({ status: true, message: "Operation successful" });
 

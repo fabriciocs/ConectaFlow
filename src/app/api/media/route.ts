@@ -4,6 +4,7 @@ import path from "path";
 import { existsSync } from "fs";
 import { getAuthenticatedUser, canAccessSession } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { requestBasePath, withBasePath } from "@/lib/base-path";
 
 // Media directory — private, NOT in public/
 const MEDIA_DIR = path.join(process.cwd(), "data", "media");
@@ -117,7 +118,7 @@ export async function GET(request: NextRequest) {
                     fromMe: msgInfo?.fromMe ?? false,
                     createdAt: fileStat.birthtime.toISOString(),
                     modifiedAt: fileStat.mtime.toISOString(),
-                    url: `/api/media/${encodeURIComponent(name)}`,
+                    url: withBasePath(`/api/media/${encodeURIComponent(name)}`, requestBasePath(request.headers)),
                 };
             })
         );
@@ -135,7 +136,7 @@ export async function GET(request: NextRequest) {
                 totalCount: files.length,
             }
         });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Media list error:", error);
         return NextResponse.json({ status: false, message: "Failed to list media", error: "Failed to list media" }, { status: 500 });
     }
@@ -171,7 +172,13 @@ export async function DELETE(request: NextRequest) {
             }
 
             const parsed = parseFilename(filename);
-            if (parsed) {
+            if (!parsed) {
+                if (user.role !== "SUPERADMIN") {
+                    errors.push(`Forbidden: ${filename}`);
+                    failed++;
+                    continue;
+                }
+            } else {
                 const canAccess = await canAccessSession(user.id, user.role, parsed.sessionId);
                 if (!canAccess) {
                     errors.push(`Forbidden: ${filename}`);
@@ -190,14 +197,14 @@ export async function DELETE(request: NextRequest) {
             try {
                 await unlink(filePath);
                 deleted++;
-            } catch (e) {
+            } catch {
                 errors.push(`Failed to delete: ${filename}`);
                 failed++;
             }
         }
 
         return NextResponse.json({ status: true, message: "Media files processed", data: { deleted, failed, errors } });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Media delete error:", error);
         return NextResponse.json({ status: false, message: "Failed to delete media", error: "Failed to delete media" }, { status: 500 });
     }

@@ -1,17 +1,28 @@
 {
   "name": "wa-akg",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "private": false,
   "license": "MIT",
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "npx tsx src/server/index.ts",
     "build": "next build",
-    "start": "NODE_ENV=production npx tsx src/server/index.ts",
+    "start": "tsx scripts/start-production.mjs",
     "lint": "eslint",
     "db:push": "prisma db push && prisma generate",
     "db:studio": "prisma studio",
     "make-admin": "node scripts/setup-admin.js",
-    "postinstall": "patch-package"
+    "test": "tsx --test src/i18n/__tests__/*.test.ts src/lib/__tests__/*.test.ts",
+    "mcp:install": "npm --prefix mcp/wa-akg-mcp install",
+    "mcp:start": "npm --prefix mcp/wa-akg-mcp start",
+    "mcp:check": "npm --prefix mcp/wa-akg-mcp run check",
+    "mcp:test": "npm --prefix mcp/wa-akg-mcp test",
+    "mcp:test:production-sessions": "npm --prefix mcp/wa-akg-mcp run test:production-sessions",
+    "replica:harness": "node scripts/replica-harness/run.mjs",
+    "replica:preflight": "node scripts/replica-harness/real-preflight.mjs"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -28,9 +39,10 @@
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@socket.io/redis-adapter": "^8.3.0",
     "@tailwindcss/typography": "^0.5.19",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -42,8 +54,10 @@
     "moment-timezone": "^0.6.0",
     "next": "16.1.1",
     "next-auth": "^5.0.0-beta.30",
+    "next-intl": "^4.14.9",
     "nextjs-toploader": "^3.9.17",
     "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.7",
     "pino": "^10.1.0",
     "qrcode": "^1.5.4",
     "qrcode.react": "^4.2.0",
@@ -54,6 +68,7 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
     "react-virtuoso": "^4.18.7",
+    "redis": "^4.7.0",
     "recharts": "^3.7.0",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.34.5",
@@ -70,15 +85,14 @@
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19",
     "@types/swagger-ui-react": "^5.18.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
-    "next-swagger-doc": "^0.4.1",
-    "patch-package": "^8.0.1",
-    "postinstall-postinstall": "^2.1.0",
+    "next-swagger-doc": "^0.5.0",
     "prisma": "^5.22.0",
     "swagger-ui-react": "^5.31.0",
     "tailwindcss": "^4",
@@ -88,8 +102,26 @@
     "typescript": "^5.9.3"
   },
   "overrides": {
+    "whatsapp-rust-bridge": "0.5.5",
     "wa-sticker-formatter": {
       "sharp": "$sharp"
     }
+  },
+  "allowScripts": {
+    "@parcel/watcher@2.6.0": true,
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "@scarf/scarf@1.4.0": true,
+    "tree-sitter@0.22.4": true,
+    "@tree-sitter-grammars/tree-sitter-yaml@0.7.1": true,
+    "@whiskeysockets/baileys@7.0.0-rc14": true,
+    "core-js-pure@3.47.0": true,
+    "esbuild@0.27.2": true,
+    "@swc/core@1.16.18": true,
+    "prisma@5.22.0": true,
+    "protobufjs@7.6.6": true,
+    "sharp@0.34.5": true,
+    "tree-sitter-json@0.24.8": true,
+    "unrs-resolver@1.11.1": true
   }
 }
