@@ -51,3 +51,6 @@ backups
 **/backup-audit.log
 **/.backup-control
 **/.backup.lock
+
+# Never embed encrypted backup archives in images
+**/*.age
