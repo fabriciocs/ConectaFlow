@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../system-backups"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}
