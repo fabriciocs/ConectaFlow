@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npx tsx src/server/index.ts",
     "build": "next build",
-    "start": "NODE_ENV=production npx tsx src/server/index.ts",
+    "start": "npx tsx src/server/index.ts",
     "lint": "eslint",
     "db:push": "prisma db push && prisma generate",
     "db:studio": "prisma studio",
