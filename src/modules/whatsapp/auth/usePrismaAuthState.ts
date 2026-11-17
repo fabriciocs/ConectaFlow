@@ -12,10 +12,20 @@ export const usePrismaAuthState = async (sessionId: string): Promise<{ state: Au
                 where: { sessionId_key: { sessionId, key } }
             });
             if (data && data.value) {
+                if (typeof data.value === "string" && data.value.startsWith("enc:v1:")) {
+                    const error = new Error(
+                        `Auth state record "${key}" is encrypted (enc:v1), but no compatible decryptor is available. Stored data was preserved.`
+                    );
+                    error.name = "EncryptedAuthStateError";
+                    throw error;
+                }
                 return JSON.parse(JSON.stringify(data.value), BufferJSON.reviver);
             }
             return null;
         } catch (error) {
+            if (error instanceof Error && error.name === "EncryptedAuthStateError") {
+                throw error;
+            }
             logger.error("Auth", 'Error reading auth state:', error);
             return null;
         }
@@ -49,7 +59,13 @@ export const usePrismaAuthState = async (sessionId: string): Promise<{ state: Au
     }
 
 
-    const creds: AuthenticationCreds = (await readData('creds', 'me')) || initAuthCreds();
+    const savedCreds = await readData('creds', 'me');
+    if (savedCreds && (typeof savedCreds !== "object" || !savedCreds.noiseKey?.public || !savedCreds.noiseKey?.private)) {
+        const error = new Error("Stored WhatsApp credentials are invalid or incomplete; refusing to start with replacement credentials.");
+        error.name = "InvalidAuthStateError";
+        throw error;
+    }
+    const creds: AuthenticationCreds = savedCreds || initAuthCreds();
 
     return {
         state: {

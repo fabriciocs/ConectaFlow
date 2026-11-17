@@ -9,6 +9,7 @@ process.env.NODE_ENV = mode;
 
 const require = createRequire(import.meta.url);
 const { loadEnvConfig } = require("@next/env");
+require("tsconfig-paths/register");
 loadEnvConfig(process.cwd());
 
 await import("../src/server/index.ts");

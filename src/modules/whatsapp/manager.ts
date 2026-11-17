@@ -34,12 +34,15 @@ export class WhatsAppManager {
         });
 
         let started = 0;
+        let idleSkipped = 0;
+        let failed = 0;
         for (const session of sessions) {
             // Only auto-init sessions that were CONNECTED before (have auth creds)
             const authCount = await prisma.authState.count({
                 where: { sessionId: session.sessionId }
             });
             if (authCount === 0) {
+                idleSkipped++;
                 // No credentials — session was created but never connected
                 // Set to STOPPED so it doesn't spam reconnect
                 await prisma.session.update({
@@ -52,10 +55,21 @@ export class WhatsAppManager {
             const instance = new WhatsAppInstance(session.sessionId, session.userId, this.io);
             instance.onRemovedFromManager = () => this.removeInstance(session.sessionId);
             this.sessions.set(session.sessionId, instance);
-            await instance.init();
-            started++;
+            try {
+                await instance.init();
+                started++;
+            } catch (error) {
+                failed++;
+                this.sessions.delete(session.sessionId);
+                logger.error("Manager", `Session ${session.sessionId} could not start; stored credentials were preserved.`, error);
+            }
         }
-        logger.success("Manager", `Loaded ${started} sessions (${sessions.length - started} idle skipped).`);
+        const summary = `Loaded ${started} sessions (${idleSkipped} idle skipped, ${failed} failed).`;
+        if (failed > 0) {
+            logger.warn("Manager", summary);
+        } else {
+            logger.success("Manager", summary);
+        }
     }
 
     async createSession(userId: string, name: string, customSessionId?: string) {
