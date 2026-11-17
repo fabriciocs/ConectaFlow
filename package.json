@@ -4,9 +4,9 @@
   "private": false,
   "license": "MIT",
   "scripts": {
-    "dev": "npx tsx src/server/index.ts",
+    "dev": "node --import tsx/esm scripts/start-server.mjs development",
     "build": "next build",
-    "start": "npx tsx src/server/index.ts",
+    "start": "node --import tsx/esm scripts/start-server.mjs production",
     "lint": "eslint",
     "db:push": "prisma db push && prisma generate",
     "db:studio": "prisma studio",
@@ -91,5 +91,20 @@
     "wa-sticker-formatter": {
       "sharp": "$sharp"
     }
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "@whiskeysockets/baileys@7.0.0-rc14": true,
+    "sharp@0.34.5": true,
+    "postinstall-postinstall@2.1.0": true,
+    "prisma@5.22.0": true,
+    "protobufjs@7.6.6": true,
+    "@prisma/engines@5.22.0": true,
+    "@scarf/scarf@1.4.0": true,
+    "core-js-pure@3.51.0": true,
+    "tree-sitter-json@0.24.8": true,
+    "@tree-sitter-grammars/tree-sitter-yaml@0.7.1": true,
+    "esbuild@0.28.2": true,
+    "tree-sitter@0.22.4": true
   }
 }
