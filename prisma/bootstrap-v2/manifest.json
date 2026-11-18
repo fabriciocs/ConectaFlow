@@ -1,9 +1,9 @@
 {
-    "schemaVersion":  "2.0.0",
+    "schemaVersion":  "2.0.1",
     "prismaVersion":  "5.22.0",
     "migrationName":  "20261104000000_v2_initial_schema",
-    "sourceCommit":  "86b3b0a4c21955e41e311ed9c081665781f79f2b",
-    "schemaSha256":  "d0bef44658a5cf9d601168e005e6ce0073c3f2e66391eb30d852bf7637161f03",
+    "sourceCommit":  "4b46ff7c9740e2eb94c089564d9d82165fbdac31",
+    "schemaSha256":  "3a885bc6b2b83ffd31267387e6129e2a1669a1fbf16c2d554d239aa4daa61af0",
     "baselineSha256":  "fb2e02443502daf0f0845045f759201d86c7319c225194771e8b7d3dd638b7a4",
-    "notes":  "Snapshot of canonical schema; immutable V2 baseline for empty MySQL databases only"
+    "notes":  "Immutable V2 baseline plus additive 20261118000000_add_channel_identity_linking migration; hashes use LF-normalized text"
 }

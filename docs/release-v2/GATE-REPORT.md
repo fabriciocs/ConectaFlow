@@ -82,5 +82,6 @@ Este relatório comprova **consolidação remota das branches**, não a prontid�
 
 - Merge local de `release/prod-v1` (`c8e035b`) para `release/prod-v2` (`1c84278`), com as salvaguardas V2 preservadas nos conflitos; sem push ou deploy.
 - Instalação npm: PASS, com avisos de peer dependency e scripts não aprovados por `allowScripts`. Prisma Client gerado: PASS. Next build, incluindo TypeScript e geração de páginas: PASS. As demais validações de H08 (lint, testes, MCP e segurança de assets) continuam NOT VERIFIED.
-- `db:inspect`: BLOCKED em `SCHEMA_CHANGED`, pois o hash do schema Prisma não corresponde ao manifesto V2. Não houve conexão ao banco nem alteração de dados. Migration e start: NOT RUN.
-- `PRODUCTION_NO_GO` permanece: a divergência do manifesto exige revisão versionada da migração; resta resolver o incidente P0, comprovar backup/restore e concluir os demais gates antes de migrar ou iniciar produção.
+- O primeiro `db:inspect` foi BLOCKED por `SCHEMA_CHANGED`; a atualização versionada do manifesto e a migration aditiva de channel identity corrigiram esse gate. A baseline V2 não foi alterada.
+- Preflight atualizado: `db:inspect` identificou linhagem V1, 43 tabelas, 14 migrations e nenhum checksum mismatch após aceitar checksums LF/CRLF idênticos em conteúdo. `prisma migrate status` encontrou `20261108120000_add_channel_identity_linking` pendente.
+- `PRODUCTION_NO_GO` permanece: migration e start NÃO executados, pois falta backup completo cifrado com restore comprovado em clone e resolução do incidente P0, além da aprovação operacional.

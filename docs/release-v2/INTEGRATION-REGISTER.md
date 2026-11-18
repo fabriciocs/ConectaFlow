@@ -82,7 +82,14 @@ Comparações `GitHub compare` após integração confirmaram `behind_by=0` de t
 - A resolução preservou a versão/dependências e o comando `start` do V2. Foi mantido `tsconfig-paths`; `.gitignore` recebeu os ajustes compatíveis. O parser da URL do servidor passou a usar `url.parse`, cujo tipo satisfaz o handler Next. O incremento `idleSkipped++` da V1 foi descartado porque o contador não existe no manager V2. O novo `scripts/start-server.mjs` e o patch Baileys da V1 estão presentes, mas não foram ligados ao `npm start` nem a um hook `postinstall`.
 - `npm install --no-audit --no-fund`: PASS (67 adicionados, 30 removidos e 48 alterados); houve avisos de peer dependency e três scripts de pacote não aprovados por `allowScripts`. `npx prisma generate`: PASS (Prisma Client 5.22.0).
 - `npm run build`: PASS após regenerar o client e corrigir os dois erros TypeScript encontrados. `git diff --check`: PASS. Testes unitários, lint e MCP: NOT RUN.
-- `npm run db:inspect`: BLOCKED antes de conectar ao banco; o manifesto V2 diverge do hash atual de `prisma/schema.prisma` (`SCHEMA_CHANGED`). Nenhuma migration ou start foi executado. É necessária uma revisão de migração V1/V2, além dos gates P0, backup/restore e aprovação ainda pendentes; a decisão de produção permanece NO-GO.
+- O primeiro `npm run db:inspect` foi BLOCKED por `SCHEMA_CHANGED`; a correção abaixo resolveu a revisão de schema. Nenhuma migration ou start foi executado nesta etapa.
+
+## Correção de schema e preflight do banco — 2026-11-18
+
+- O manifesto apontava para um schema anterior aos modelos `ChannelIdentityLink` e `ChannelLinkChallenge`. Foi criado o bootstrap V2 `20261118000000_add_channel_identity_linking`; a baseline `20261104000000_v2_initial_schema` permaneceu imutável. O manifesto passou a `2.0.1` e hashes de texto Prisma são normalizados para LF; o verificador de histórico aceita o hash bruto já registrado ou seu equivalente LF, sem alterar o ledger.
+- `npx prisma validate`, `node --check scripts/prisma-bootstrap-v2.mjs` e `npm run build`: PASS.
+- `npm run db:inspect`: INSPECTED, linhagem V1, 43 tabelas, 14 registros de migration e nenhum checksum mismatch após validar LF/CRLF.
+- `npx prisma migrate status`: uma migration V1 pendente, `20261108120000_add_channel_identity_linking`. Migration e start continuam BLOCKED/NOT RUN: ainda é necessário backup completo, cifrado e restaurado em clone, além dos gates P0/R02 e aprovação operacional. A decisão de produção permanece NO-GO.
 
 ## Verificação do CLI nesta rodada
 

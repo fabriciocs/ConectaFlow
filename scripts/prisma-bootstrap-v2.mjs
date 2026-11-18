@@ -22,6 +22,11 @@ export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function sha256CanonicalTextFile(file) {
+  const text = readFileSync(file, "utf8").replace(/\r\n?/g, "\n");
+  return sha256(text);
+}
+
 export function parseDatabaseName(rawUrl) {
   if (!rawUrl) throw new Error("DATABASE_URL ausente");
   let parsed;
@@ -60,9 +65,9 @@ function parseArgs(argv) {
 
 function checkManifest() {
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
-  const schemaHash = sha256(readFileSync(CANONICAL_SCHEMA));
+  const schemaHash = sha256CanonicalTextFile(CANONICAL_SCHEMA);
   const migrationPath = path.join(V2_ROOT, "migrations", manifest.migrationName, "migration.sql");
-  const baselineHash = sha256(readFileSync(migrationPath));
+  const baselineHash = sha256CanonicalTextFile(migrationPath);
   if (manifest.schemaSha256 !== schemaHash) {
     throw new Error("SCHEMA_CHANGED: criar revisao de migracao V1/V2 antes de prosseguir");
   }
@@ -91,8 +96,20 @@ export function checkRecordedHashes(rows, migrationsPath) {
       continue;
     }
     const file = path.join(migrationsPath, item.migration_name, "migration.sql");
-    if (!existsSync(file) || item.checksum !== sha256(readFileSync(file))) {
-      mismatches.push({ migration: item.migration_name, reason: "checksum_or_file" });
+    if (!existsSync(file)) {
+      mismatches.push({ migration: item.migration_name, reason: "file_missing" });
+      continue;
+    }
+    const fileChecksum = sha256CanonicalTextFile(file);
+    const rawFileChecksum = sha256(readFileSync(file));
+    if (item.checksum !== fileChecksum && item.checksum !== rawFileChecksum) {
+      mismatches.push({
+        migration: item.migration_name,
+        reason: "checksum_mismatch",
+        recordedChecksum: item.checksum,
+        fileChecksum,
+        rawFileChecksum,
+      });
     }
   }
   return mismatches;
