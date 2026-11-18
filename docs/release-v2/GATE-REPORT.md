@@ -77,3 +77,10 @@ O script `scripts/Sync-Fork-B2.ps1` é operacional de preparação e não substi
 Este relatório comprova **consolidação remota das branches**, não a prontidão de produção. A promoção exige testes estáticos e operacionais sobre SHA congelado, restauração verificável, classificação Prisma, resolução do P0 age, segurança R15 e decisão formal `RELEASE_GO` em janela autorizada.
 
 **Estado final deste ciclo:** `INTEGRATION=VERIFIED`; `TESTS=NOT_VERIFIED`; `UPGRADE=BLOCKED`; `DEPLOY=DEFERRED`.
+
+## Evidência adicional do checkout local — 2026-11-18
+
+- Merge local de `release/prod-v1` (`c8e035b`) para `release/prod-v2` (`1c84278`), com as salvaguardas V2 preservadas nos conflitos; sem push ou deploy.
+- Instalação npm: PASS, com avisos de peer dependency e scripts não aprovados por `allowScripts`. Prisma Client gerado: PASS. Next build, incluindo TypeScript e geração de páginas: PASS. As demais validações de H08 (lint, testes, MCP e segurança de assets) continuam NOT VERIFIED.
+- `db:inspect`: BLOCKED em `SCHEMA_CHANGED`, pois o hash do schema Prisma não corresponde ao manifesto V2. Não houve conexão ao banco nem alteração de dados. Migration e start: NOT RUN.
+- `PRODUCTION_NO_GO` permanece: a divergência do manifesto exige revisão versionada da migração; resta resolver o incidente P0, comprovar backup/restore e concluir os demais gates antes de migrar ou iniciar produção.

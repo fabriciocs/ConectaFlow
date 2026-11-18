@@ -1,8 +1,5 @@
-import { loadEnvConfig } from "@next/env";
-// Load environment variables before any other imports/logic
-loadEnvConfig(process.cwd());
-
 import { createServer } from "http";
+import { parse } from "url";
 import next from "next";
 import { Server } from "socket.io";
 import { setupSocket } from "./socket";
@@ -71,18 +68,8 @@ app.prepare().then(async () => {
     let requestPath = "/";
     try {
       if (!req.url) return;
-      const requestUrl = new URL(req.url, "http://localhost");
-      requestPath = requestUrl.pathname;
-      const query: Record<string, string | string[]> = Object.create(null);
-      requestUrl.searchParams.forEach((value, key) => {
-        const existing = query[key];
-        query[key] = existing === undefined
-          ? value
-          : Array.isArray(existing)
-            ? [...existing, value]
-            : [existing, value];
-      });
-      const parsedUrl = { pathname: requestUrl.pathname, query };
+      const parsedUrl = parse(req.url, true);
+      requestPath = parsedUrl.pathname || "/";
       if (handleMcpHttp && (parsedUrl.pathname === mcpEndpointPath || parsedUrl.pathname === `${mcpEndpointPath}/`)) {
         await handleMcpHttp(req, res);
         return;

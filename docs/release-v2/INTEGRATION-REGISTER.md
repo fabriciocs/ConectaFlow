@@ -76,6 +76,14 @@ O comando **não realiza upgrade** nesta fase. `upgrade`/`resume`/`rollback` ter
 
 Comparações `GitHub compare` após integração confirmaram `behind_by=0` de todas as seis fontes em relação à V2; esse teste comprova **ancestralidade**, não compilação, compatibilidade de schema, segurança ou funcionamento.
 
+## Atualização do checkout local — 2026-11-18
+
+- `release/prod-v2` (`1c84278`) integrou localmente `release/prod-v1` (`c8e035b`) por merge com dois pais. Os trechos conflitantes mantiveram as salvaguardas e o runtime V2; não foi feito push.
+- A resolução preservou a versão/dependências e o comando `start` do V2. Foi mantido `tsconfig-paths`; `.gitignore` recebeu os ajustes compatíveis. O parser da URL do servidor passou a usar `url.parse`, cujo tipo satisfaz o handler Next. O incremento `idleSkipped++` da V1 foi descartado porque o contador não existe no manager V2. O novo `scripts/start-server.mjs` e o patch Baileys da V1 estão presentes, mas não foram ligados ao `npm start` nem a um hook `postinstall`.
+- `npm install --no-audit --no-fund`: PASS (67 adicionados, 30 removidos e 48 alterados); houve avisos de peer dependency e três scripts de pacote não aprovados por `allowScripts`. `npx prisma generate`: PASS (Prisma Client 5.22.0).
+- `npm run build`: PASS após regenerar o client e corrigir os dois erros TypeScript encontrados. `git diff --check`: PASS. Testes unitários, lint e MCP: NOT RUN.
+- `npm run db:inspect`: BLOCKED antes de conectar ao banco; o manifesto V2 diverge do hash atual de `prisma/schema.prisma` (`SCHEMA_CHANGED`). Nenhuma migration ou start foi executado. É necessária uma revisão de migração V1/V2, além dos gates P0, backup/restore e aprovação ainda pendentes; a decisão de produção permanece NO-GO.
+
 ## Verificação do CLI nesta rodada
 
 - Conteúdo de `upgrade.mjs` e `upgrade.test.mjs` confirmado na branch por blob SHA do GitHub.
