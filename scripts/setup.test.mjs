@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { detectConfig, generateSecret, migrateValues, parseEnv, redact, renderEnv, sanitizeOutput, spawnPortable, validate } from "./setup.mjs";
+import { detectConfig, migrateValues, parseEnv, redact, renderEnv, sanitizeOutput, spawnPortable, validate } from "./setup.mjs";
 
 const template = "PORT=3000\nDATABASE_URL=mysql://root@localhost/db\nAUTH_SECRET=placeholder\nBASE_URL=http://localhost:3000\nNODE_ENV=development\n";
 
@@ -116,6 +116,38 @@ test("interactive production selection requires migration approval before changi
     assert.equal(result.answered, 4);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /Produção exige confirmação explícita/);
+    assert.equal(fs.readFileSync(testEnv, "utf8"), initialEnv);
+    assert.deepEqual(fs.readdirSync(fixture).filter((name) => name.startsWith(".env.backup")), []);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("non-interactive configure-only preserves an already current env file", { timeout: 12000 }, async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "wa-akg-setup-current-"));
+  try {
+    const scriptsDir = path.join(fixture, "scripts");
+    fs.mkdirSync(scriptsDir);
+    fs.copyFileSync(new URL("./setup.mjs", import.meta.url), path.join(scriptsDir, "setup.mjs"));
+    const initialEnv = template.replace("AUTH_SECRET=placeholder", "AUTH_SECRET=synthetic-test-secret") + "WA_AKG_SETUP_VERSION=1\n";
+    const testEnv = path.join(fixture, ".env");
+    fs.writeFileSync(testEnv, initialEnv);
+    fs.writeFileSync(path.join(fixture, ".env.example"), initialEnv);
+
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(scriptsDir, "setup.mjs"), "--mode=dev", "--non-interactive", "--configure-only"], {
+        cwd: fixture, stdio: ["ignore", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Configuração atual preservada/);
     assert.equal(fs.readFileSync(testEnv, "utf8"), initialEnv);
     assert.deepEqual(fs.readdirSync(fixture).filter((name) => name.startsWith(".env.backup")), []);
   } finally {

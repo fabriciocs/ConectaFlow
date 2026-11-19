@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import cronParser from "cron-parser";
+import { CronExpressionParser } from "cron-parser";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { waManager } from "@/modules/whatsapp/manager";
@@ -139,7 +139,7 @@ export function createScheduledMessageProcessor(dependencies: ScheduledMessagePr
             } catch (error) {
                 logError(`Scheduled send failed for ${message.id}`, error);
                 const retryAt = message.cronExpression
-                    ? cronParser.parse(message.cronExpression, { tz: "Asia/Jakarta", currentDate: now }).next().toDate()
+                    ? CronExpressionParser.parse(message.cronExpression, { tz: "Asia/Jakarta", currentDate: now }).next().toDate()
                     : undefined;
                 await scheduledMessage.updateMany({
                     where: { id: message.id, tenantId, claimToken: token },
@@ -155,7 +155,7 @@ export function createScheduledMessageProcessor(dependencies: ScheduledMessagePr
             }
 
             const nextDate = message.cronExpression
-                ? cronParser.parse(message.cronExpression, { tz: "Asia/Jakarta", currentDate: now }).next().toDate()
+                ? CronExpressionParser.parse(message.cronExpression, { tz: "Asia/Jakarta", currentDate: now }).next().toDate()
                 : undefined;
             const updated = await scheduledMessage.updateMany({
                 where: { id: message.id, tenantId, claimToken: token },

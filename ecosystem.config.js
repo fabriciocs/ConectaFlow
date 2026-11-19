@@ -3,8 +3,8 @@ module.exports = {
     {
       name: "wa-evomenu",
       cwd: "/opt/WA-AKG",
-      script: "/home/evomenu/.nvm/versions/node/v22.23.3/bin/node",
-      args: "node_modules/tsx/dist/cli.mjs src/server/index.ts",
+      script: "/home/evomenu/.nvm/versions/node/v24.22.1/bin/node",
+      args: "node_modules/tsx/dist/cli.mjs scripts/start-production.mjs",
       interpreter: "none",
       watch: false,
       autorestart: true,

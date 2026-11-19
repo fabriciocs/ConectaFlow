@@ -6,6 +6,7 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "tsx scripts/start-development.mjs",
+    "restart": "pm2 restart wa-evomenu --update-env",
     "build": "next build",
     "start": "tsx scripts/start-production.mjs",
     "lint": "eslint",

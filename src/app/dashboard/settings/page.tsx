@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { useTranslations } from "next-intl";
 import { resolveBrandConfig } from "@/lib/branding";
 import { useBranding } from "@/components/branding-provider";
+import { AdminAuthorizationDialog } from "@/components/dashboard/admin-authorization-dialog";
 
 export default function SettingsPage() {
     const t = useTranslations("settings");
@@ -27,6 +28,7 @@ export default function SettingsPage() {
         enableRegistration: true
     });
     const [systemLoading, setSystemLoading] = useState(false);
+    const [authorizationOpen, setAuthorizationOpen] = useState(false);
     const [timezones, setTimezones] = useState<string[]>(["UTC", "Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura"]);
 
     useEffect(() => {
@@ -63,19 +65,31 @@ export default function SettingsPage() {
             .catch(() => { });
     }, []);
 
-    const handleSaveSystem = async () => {
+    const handleSaveSystem = async (reason: string, totp: string) => {
         setSystemLoading(true);
         try {
             const res = await fetch(apiUrl('/api/settings/system'), {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wa-akg-admin-reason": reason,
+                    "x-wa-akg-admin-totp": totp,
+                },
                 body: JSON.stringify(systemConfig)
             });
 
             if (res.ok) {
                 toast.success(t("savedSuccess"));
+                setAuthorizationOpen(false);
             } else {
-                toast.error(t("saveFailed"));
+                const error = await res.json().catch(() => null);
+                toast.error(error?.error === "mfa_verification_failed"
+                    ? "Código autenticador inválido ou não configurado."
+                    : error?.error === "mfa_code_already_used"
+                        ? "Este código já foi usado. Informe um novo código autenticador."
+                    : error?.error === "mfa_and_reason_required"
+                        ? "Informe o motivo e o código autenticador de 6 dígitos."
+                        : t("saveFailed"));
             }
         } catch (e) {
             console.error(e);
@@ -187,13 +201,21 @@ export default function SettingsPage() {
                     </div>
 
                     <div className="pt-2">
-                        <Button onClick={handleSaveSystem} disabled={systemLoading || !isSuperAdmin}>
+                        <Button onClick={() => setAuthorizationOpen(true)} disabled={systemLoading || !isSuperAdmin}>
                             {systemLoading ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
                             {t("saveConfig")}
                         </Button>
                     </div>
                 </CardContent>
             </Card>
+
+            <AdminAuthorizationDialog
+                open={authorizationOpen}
+                onOpenChange={setAuthorizationOpen}
+                onAuthorize={handleSaveSystem}
+                loading={systemLoading}
+                actionLabel="salvar as configurações do sistema"
+            />
 
             {/* System Updates */}
             <Card>

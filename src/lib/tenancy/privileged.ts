@@ -38,6 +38,35 @@ function totpSecretFor(userId: string): string | null {
   }
 }
 
+/**
+ * Authorize repeatable, read-only platform endpoints for a verified superadmin.
+ * Mutating administrative operations must continue using withPrivilegedAdministration,
+ * which requires a fresh TOTP and an audited reason for every request.
+ */
+export async function withSuperAdminRead(
+  request: Request,
+  perform: (actorUserId: string) => Promise<unknown>,
+) {
+  if (request.headers.has("authorization") || request.headers.has("x-api-key")) {
+    return response({ error: "browser_session_required" }, 403);
+  }
+  const origin = request.headers.get("origin");
+  if (origin && origin !== requestPublicOrigin(request.headers, request.url)) {
+    return response({ error: "forbidden" }, 403);
+  }
+
+  const userId = (await auth())?.user?.id;
+  if (!userId) return response({ error: "unauthorized" }, 401);
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true, emailVerified: true } });
+  if (user?.role !== "SUPERADMIN" || !user.emailVerified) return response({ error: "forbidden" }, 403);
+
+  try {
+    return response(await perform(userId), 200);
+  } catch {
+    return response({ error: "system_monitor_unavailable" }, 503);
+  }
+}
+
 export async function withPrivilegedAdministration(
   request: Request,
   operation: AdministrativeOperation,

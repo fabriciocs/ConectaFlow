@@ -142,8 +142,8 @@ async function configure({ nonInteractive = false, requestedMode, applyMigration
   let values = migrateValues(detected.values, template);
   const rl = nonInteractive ? null : readline.createInterface({ input, output });
   try {
-    let reconfigure = detected.state !== "missing";
-    if (rl && reconfigure) reconfigure = (await ask(rl, "Configuração existente/antiga. Reconfigurar? (s/N)", "N")).toLowerCase().startsWith("s");
+    let reconfigure = detected.state === "legacy";
+    if (rl && detected.state !== "missing") reconfigure = (await ask(rl, "Configuração existente/antiga. Reconfigurar? (s/N)", "N")).toLowerCase().startsWith("s");
     if (rl && reconfigure) {
       values.PORT = await ask(rl, "Porta", values.PORT);
       values.BASE_URL = await ask(rl, "URL base", values.BASE_URL);

@@ -1,13 +1,11 @@
 import si from "systeminformation";
-import { withPrivilegedAdministration } from "@/lib/tenancy/privileged";
+import { withSuperAdminRead } from "@/lib/tenancy/privileged";
 
 // Ensure this route is dynamic
 export const dynamic = "force-dynamic";
 
 export function GET(request: Request) {
-    return withPrivilegedAdministration(request, {
-        name: "SYSTEM_MONITOR_READ", action: "READ", resourceType: "SystemMonitor",
-    }, async () => {
+    return withSuperAdminRead(request, async () => {
         const [cpu, mem, os, fsSize, networkStats] = await Promise.all([
             si.currentLoad(), si.mem(), si.osInfo(), si.fsSize(), si.networkStats(),
         ]);
@@ -30,6 +28,6 @@ export function GET(request: Request) {
                 heapUsed: processMemory.heapUsed, rss: processMemory.rss,
             },
         };
-        return { data: { status: true, message: "System metrics fetched successfully", data } };
+        return { status: true, message: "System metrics fetched successfully", data };
     });
 }

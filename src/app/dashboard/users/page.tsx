@@ -1,7 +1,7 @@
 "use client";
 import { apiUrl } from "@/lib/api-url";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Trash2, Plus, Edit, User, ShieldAlert, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { AdminAuthorizationDialog } from "@/components/dashboard/admin-authorization-dialog";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -40,6 +41,21 @@ export default function UsersPage() {
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
     const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+    const [authorizationOpen, setAuthorizationOpen] = useState(true);
+    const [mutationLoading, setMutationLoading] = useState(false);
+    const [pendingMutation, setPendingMutation] = useState<{
+        url: string;
+        method: "GET" | "POST" | "PATCH" | "DELETE";
+        body?: string;
+    } | null>({ url: "/api/users", method: "GET" });
+
+    const handleAuthorizationOpenChange = (open: boolean) => {
+        setAuthorizationOpen(open);
+        if (!open) {
+            setPendingMutation(null);
+            setLoading(false);
+        }
+    };
 
     // Form state
     const [formData, setFormData] = useState({
@@ -49,52 +65,14 @@ export default function UsersPage() {
         role: "USER"
     });
 
-    const fetchUsers = useCallback(async () => {
-        try {
-            const res = await fetch(apiUrl("/api/users"));
-            if (res.ok) {
-                const responseData = await res.json();
-                setUsers(responseData?.data || []);
-            } else if (res.status === 403) {
-                toast.error(t("unauthorizedSuperAdmin"));
-            }
-        } catch (error) {
-            console.error("Failed to fetch users", error);
-        } finally {
-            setLoading(false);
-        }
-    }, [t]);
-
-    useEffect(() => {
-        void fetchUsers();
-    }, [fetchUsers]);
-
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-
-        try {
-            const url = editingUser ? `/api/users/${editingUser.id}` : "/api/users";
-            const method = editingUser ? "PATCH" : "POST";
-
-            const res = await fetch(url, {
-                method,
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(formData)
-            });
-
-            if (res.ok) {
-                toast.success(editingUser ? t("userUpdated") : t("userCreated"));
-                setShowForm(false);
-                setEditingUser(null);
-                setFormData({ name: "", email: "", password: "", role: "USER" });
-                fetchUsers();
-            } else {
-                const error = await res.json();
-                toast.error(error.error || "Operation failed");
-            }
-        } catch {
-            toast.error("Operation failed");
-        }
+        setPendingMutation({
+            url: editingUser ? `/api/users/${editingUser.id}` : "/api/users",
+            method: editingUser ? "PATCH" : "POST",
+            body: JSON.stringify(formData),
+        });
+        setAuthorizationOpen(true);
     };
 
     const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -105,20 +83,71 @@ export default function UsersPage() {
 
     const confirmDelete = async () => {
         if (!deleteId) return;
+        setPendingMutation({ url: `/api/users/${deleteId}`, method: "DELETE" });
+        setDeleteId(null);
+        setAuthorizationOpen(true);
+    };
 
+    const authorizeMutation = async (reason: string, totp: string) => {
+        if (!pendingMutation) return;
+        setMutationLoading(true);
         try {
-            const res = await fetch(apiUrl(`/api/users/${deleteId}`), { method: "DELETE" });
+            const res = await fetch(apiUrl(pendingMutation.url), {
+                method: pendingMutation.method,
+                headers: {
+                    ...(pendingMutation.body ? { "Content-Type": "application/json" } : {}),
+                    "x-wa-akg-admin-reason": reason,
+                    "x-wa-akg-admin-totp": totp,
+                },
+                ...(pendingMutation.body ? { body: pendingMutation.body } : {}),
+            });
             if (res.ok) {
-                toast.success(t("userDeleted"));
-                fetchUsers();
+                const result = await res.json().catch(() => null);
+                if (pendingMutation.method === "GET") {
+                    setUsers(result?.data || []);
+                } else if (pendingMutation.method === "DELETE") {
+                    const deletedId = pendingMutation.url.split("/").at(-1);
+                    setUsers((current) => current.filter((user) => user.id !== deletedId));
+                    toast.success(t("userDeleted"));
+                } else if (pendingMutation.method === "PATCH") {
+                    const updatedUser = result?.data?.data;
+                    if (updatedUser) setUsers((current) => current.map((user) => user.id === updatedUser.id ? { ...user, ...updatedUser } : user));
+                    toast.success(t("userUpdated"));
+                } else {
+                    const createdUser = result?.data?.data;
+                    if (createdUser) setUsers((current) => [{ ...createdUser, _count: { sessions: 0 } }, ...current]);
+                    toast.success(t("userCreated"));
+                }
+                setAuthorizationOpen(false);
+                setPendingMutation(null);
+                if (pendingMutation.method === "POST" || pendingMutation.method === "PATCH") {
+                    setShowForm(false);
+                    setEditingUser(null);
+                    setFormData({ name: "", email: "", password: "", role: "USER" });
+                }
             } else {
-                const error = await res.json();
-                toast.error(error.error || "Failed to delete");
+                const error = await res.json().catch(() => null);
+                if (pendingMutation.method === "GET") {
+                    toast.error(error?.error === "forbidden"
+                        ? t("unauthorizedSuperAdmin")
+                        : error?.error === "mfa_verification_failed"
+                            ? "Código autenticador inválido ou não configurado."
+                            : error?.error === "mfa_code_already_used"
+                                ? "Este código já foi usado. Informe um novo código autenticador."
+                                : "Não foi possível carregar os usuários.");
+                } else {
+                    toast.error(error?.error === "mfa_verification_failed"
+                        ? "Código autenticador inválido ou não configurado."
+                        : error?.error === "mfa_code_already_used"
+                            ? "Este código já foi usado. Informe um novo código autenticador."
+                            : error?.error || "Operation failed");
+                }
             }
         } catch {
-            toast.error("Failed to delete user");
+            toast.error("Operation failed");
         } finally {
-            setDeleteId(null);
+            setMutationLoading(false);
+            if (pendingMutation.method === "GET") setLoading(false);
         }
     };
 
@@ -129,8 +158,6 @@ export default function UsersPage() {
             default: return <User className="h-4 w-4 text-muted-foreground" />;
         }
     };
-
-    if (loading) return <div className="p-8 text-center text-muted-foreground">{tCommon("loading")}</div>;
 
     // TODO: Improve RBAC check here if strictly needed, but API protects it.
     // If empty list and not loading, likely unauthorized or empty.
@@ -217,7 +244,10 @@ export default function UsersPage() {
             )}
 
             {/* Users Table */}
-            <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {loading ? (
+                <div className="p-8 text-center text-muted-foreground">{tCommon("loading")}</div>
+            ) : (
+                <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {users.map(user => (
                     <Card key={user.id} className="overflow-hidden">
                         <CardContent className="p-0">
@@ -263,7 +293,8 @@ export default function UsersPage() {
                         </CardContent>
                     </Card>
                 ))}
-            </div>
+                </div>
+            )}
             {/* Confirmation Dialog */}
             <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
                 <AlertDialogContent>
@@ -279,6 +310,17 @@ export default function UsersPage() {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+            <AdminAuthorizationDialog
+                open={authorizationOpen}
+                onOpenChange={handleAuthorizationOpenChange}
+                onAuthorize={authorizeMutation}
+                loading={mutationLoading}
+                actionLabel={pendingMutation?.method === "GET"
+                    ? "acessar a lista de usuários"
+                    : pendingMutation?.method === "DELETE"
+                    ? "excluir este usuário"
+                    : pendingMutation?.method === "PATCH" ? "salvar as alterações deste usuário" : "criar este usuário"}
+            />
         </div>
     );
 }
