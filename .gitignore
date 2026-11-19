@@ -37,6 +37,9 @@ yarn-error.log*
 .env*
 !.env*.example
 
+# Local superadmin TOTP provisioning material
+/.wa-akg-admin-totp*
+
 # vercel
 .vercel
 
@@ -62,6 +65,7 @@ server.log
 # Local operational evidence and generated delivery archives
 /.remote-desktop/
 /*.zip
+/omniroute-state-*.tar.gz
 
 # Security: operational backup material and private age identities never belong in Git
 /backups/
